@@ -11,14 +11,14 @@ export function Navbar() {
             initial={{ y: -16, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             transition={{ duration: 0.3, ease: 'easeOut' }}
-            className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-3xl"
+            className="fixed px-2 top-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-3xl"
         >
             <div className="
                 flex items-center justify-between
                 px-4 py-2.5
-                bg-white/80 dark:bg-zinc-900/80
-                backdrop-blur-md
-                border border-zinc-200/60 dark:border-zinc-700/60
+                bg-white/90 dark:bg-zinc-900/90
+                backdrop-blur-xl
+                border border-zinc-200/70 dark:border-zinc-700/70
                 rounded-2xl
                 shadow-sm shadow-zinc-200/50 dark:shadow-zinc-900/50
             ">
@@ -38,8 +38,6 @@ export function Navbar() {
 
                 {/* Right side */}
                 <div className="flex items-center gap-3">
-
-                    {/* Clerk UserButton — has avatar + logout built in */}
                     <UserButton
                         appearance={{
                             elements: {

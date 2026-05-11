@@ -43,4 +43,6 @@ export type UIState = {
     emptyMessage: string        // AI-provided message shown when a query returns 0 results
     selectedClientId: string | null
     selectedInvoiceId: string | null
+    appointmentAction: string | null   // 'create_appointment' | 'cancel_appointment' | 'cancel_appointments_bulk' | null
+    appointmentData?: Record<string, string>  // create/cancel fields, or bulk: bulkScope, month (YYYY-MM), clientName
 }

@@ -20,6 +20,10 @@ const VALID_COMPONENTS = [
     'InvoiceBuilder',
     'PaymentStatus',
     'EmptyState',
+    'BookingCalendar',
+    'AppointmentCard',
+    'SlotPicker',
+    'ReminderSender',
 ] as const
 
 type Component = typeof VALID_COMPONENTS[number]
@@ -32,8 +36,20 @@ export type AriaResponse = {
         status?: string
         city?: string
         search?: string
+        week?: string      // 'current' for "this week" queries
     }
-    action?: string
+    action?: string        // 'none' | 'create_appointment' | 'cancel_appointment' | 'cancel_appointments_bulk'
+    appointmentData?: {
+        clientName?: string
+        date?: string
+        time?: string
+        title?: string
+        notes?: string
+        /** bulk cancel: 'month' | 'client' | 'month_client' | 'all_future' */
+        bulkScope?: string
+        /** YYYY-MM, required for month / month_client */
+        month?: string
+    }
     emptyMessage?: string
 }
 
@@ -60,6 +76,17 @@ function sanitise(raw: Record<string, unknown>): AriaResponse {
         ? components
         : ['StatsBar', 'ClientTable']
 
+    const actionStr = typeof raw.action === 'string' ? raw.action : 'none'
+    /** BookingCalendar runs create/cancel/bulk side effects — it must mount or nothing happens */
+    const APPOINTMENT_UI_ACTIONS = new Set([
+        'create_appointment',
+        'cancel_appointment',
+        'cancel_appointments_bulk',
+    ])
+    const componentsForUi: Component[] = APPOINTMENT_UI_ACTIONS.has(actionStr)
+        ? ['BookingCalendar', ...safeComponents.filter((c) => c !== 'BookingCalendar')]
+        : safeComponents
+
     // Filters — accept any string values, they go into Supabase .ilike() which is safe
     const rawFilters = typeof raw.filters === 'object' && raw.filters !== null
         ? raw.filters as Record<string, unknown>
@@ -78,12 +105,29 @@ function sanitise(raw: Record<string, unknown>): AriaResponse {
         else if (filters.status) emptyMessage = `No ${filters.status} results found`
     }
 
+    const rawApptData = raw.appointmentData
+    const appointmentData = typeof rawApptData === 'object' && rawApptData !== null
+        ? (rawApptData as Record<string, unknown>)
+        : undefined
+    const safeAppt: AriaResponse['appointmentData'] = appointmentData
+        ? {
+            ...(typeof appointmentData.clientName === 'string' ? { clientName: appointmentData.clientName } : {}),
+            ...(typeof appointmentData.date === 'string' ? { date: appointmentData.date } : {}),
+            ...(typeof appointmentData.time === 'string' ? { time: appointmentData.time } : {}),
+            ...(typeof appointmentData.title === 'string' ? { title: appointmentData.title } : {}),
+            ...(typeof appointmentData.notes === 'string' ? { notes: appointmentData.notes } : {}),
+            ...(typeof appointmentData.bulkScope === 'string' ? { bulkScope: appointmentData.bulkScope } : {}),
+            ...(typeof appointmentData.month === 'string' ? { month: appointmentData.month } : {}),
+        }
+        : undefined
+
     return {
         reply,
         changeUI: true,
-        components: safeComponents,
+        components: componentsForUi,
         filters,
-        action: typeof raw.action === 'string' ? raw.action : 'none',
+        action: actionStr,
+        appointmentData: safeAppt && Object.keys(safeAppt).length > 0 ? safeAppt : undefined,
         emptyMessage,
     }
 }
@@ -101,6 +145,10 @@ WHAT YOU CAN SHOW (the dashboard components):
 - InvoiceList     → list of invoices (filter by status: paid/overdue/draft/sent)
 - InvoiceBuilder  → form to create a brand new invoice
 - PaymentStatus   → payment summary and breakdown
+- BookingCalendar → full month calendar showing all appointments (create/cancel)
+- AppointmentCard → detailed view of specific appointment(s) by client name
+- SlotPicker      → available time slot picker — book a slot for a client
+- ReminderSender  → list upcoming appointments with a "Remind" button to email the client
 - EmptyState      → shown when nothing relevant exists
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -115,6 +163,47 @@ GRATITUDE ("thanks", "great", "awesome", "perfect"):
 
 HELP / CAPABILITIES ("what can you do", "help me", "how does this work"):
 → changeUI: false. Explain what you can do in 2-3 sentences, conversationally.
+
+CALENDAR / APPOINTMENTS ("show calendar", "schedule meeting", "what meetings this week", "cancel meeting"):
+→ changeUI: true, components: ["BookingCalendar"]
+  • "show calendar" / "my schedule" / "appointments" = just show the calendar, action: "none"
+  • "schedule" / "book" / "set up meeting" / "arrange call" = action: "create_appointment"
+    - Extract: clientName, date (resolve relative dates to YYYY-MM-DD), time (24h HH:mm), title
+  • "what meetings" / "meetings this week" = action: "none", filters: { week: "current" }
+  • SINGLE cancel ("cancel my meeting with Rahul", "remove Priya's call") = action: "cancel_appointment", appointmentData: { clientName }
+  • BULK cancel — MUST use action: "cancel_appointments_bulk" with appointmentData.bulkScope and optional month / clientName:
+    - "cancel all my meetings this month" / "clear my schedule for May" → bulkScope: "month", month: "YYYY-MM" (from [TODAY])
+    - "cancel all meetings with Priya" / "wipe all appointments for client X" → bulkScope: "client", clientName (all upcoming native meetings for that client)
+    - "cancel all meetings with Rahul this month" → bulkScope: "month_client", month, clientName
+    - "cancel everything upcoming" / "clear all future meetings" → bulkScope: "all_future" (no month, no clientName)
+  • GOOGLE CALENDAR (events synced from Google, shown with a link icon in the app): we only have read-only sync. NEVER use cancel_appointment / cancel_appointments_bulk to "cancel Google" — those actions only cancel FreelanceOS-native meetings. In your reply, always mention that Google Calendar events must be cancelled manually in Google Calendar if relevant.
+  • MANDATORY: If action is create_appointment, cancel_appointment, or cancel_appointments_bulk, put "BookingCalendar" FIRST in components (that component performs the action). Never use only StatsBar/ClientTable for those actions.
+
+APPOINTMENT DETAILS ("show my meeting with Priya", "what's my call with Rahul"):
+→ changeUI: true, components: ["AppointmentCard"]
+  - Extract clientName into appointmentData: { clientName: "Priya" }
+  - Example: "show my meeting with Priya" → { "components": ["AppointmentCard"], "appointmentData": { "clientName": "Priya" } }
+
+BOOKING SLOT ("send booking link to Rahul", "pick a time for client", "schedule slot", "find a time"):
+→ changeUI: true, components: ["SlotPicker"]
+  - Extract clientName into appointmentData if mentioned
+  - Example: "send booking link to Rahul" → { "components": ["SlotPicker"], "appointmentData": { "clientName": "Rahul" } }
+
+REMINDERS ("remind Rahul about tomorrow", "send reminder", "nudge client about call"):
+→ changeUI: true, components: ["ReminderSender"]
+  - Extract clientName into appointmentData if mentioned
+  - Example: "remind Rahul about tomorrow's call" → { "components": ["ReminderSender"], "appointmentData": { "clientName": "Rahul" } }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DATE/TIME AWARENESS (CRITICAL):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You will be given the current date and time in the user message as [TODAY: YYYY-MM-DD, DAY_OF_WEEK].
+ALWAYS use this to resolve relative dates:
+  • "today" → the date provided
+  • "tomorrow" → the day after the date provided
+  • "next Monday" → the next Monday after the date provided
+  • "day after tomorrow" → two days after
+NEVER guess or hallucinate a date. ALWAYS calculate from the provided date.
 
 BUSINESS REQUESTS (anything about clients, invoices, payments, earnings):
 → changeUI: true. Pick the right components. Understand ALL natural variations:
@@ -153,8 +242,16 @@ RESPONSE FORMAT (always valid JSON):
   "changeUI": true or false,
   "components": ["StatsBar", "ClientTable"],   // only when changeUI is true
   "filters": { "city": "Mumbai" },             // only when changeUI is true, only if filtering
-  "action": "none",                            // only when changeUI is true
-  "emptyMessage": "No clients in Mumbai yet"   // ALWAYS include when filters are set — describes what to show if 0 results
+  "action": "none",                            // or "create_appointment" / "cancel_appointment" / "cancel_appointments_bulk"
+  "appointmentData": {
+    "clientName": "Rahul",
+    "date": "2026-05-11",
+    "time": "15:00",
+    "title": "Meeting with Rahul",
+    "bulkScope": "month",
+    "month": "2026-05"
+  },
+  "emptyMessage": "No clients in Mumbai yet"   // ALWAYS include when filters are set
 }
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -205,7 +302,7 @@ export async function POST(req: Request) {
             model: openrouter('google/gemini-2.0-flash-001'),
             messages,
             temperature: 0.2,
-            maxOutputTokens: 300,
+            maxOutputTokens: 450,
         })
 
         const raw = result.text
@@ -226,8 +323,8 @@ export async function POST(req: Request) {
         console.log(`[Aria] "${prompt}" → "${response.reply}" (changeUI: ${response.changeUI})`)
         return Response.json(response)
 
-    } catch (err: any) {
-        console.error('[Aria] Error:', err?.message || err)
+    } catch (err: unknown) {
+        console.error('[Aria] Error:', (err as Error)?.message || err)
 
         // On AI failure, use simple heuristic fallback
         const p = prompt.toLowerCase()

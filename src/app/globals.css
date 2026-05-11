@@ -4,6 +4,17 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* globals.css */
+:root {
+  --fade-color: #fafafa;
+  /* zinc-50 */
+}
+
+.dark {
+  --fade-color: #09090b;
+  /* zinc-950 */
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -121,9 +132,11 @@
   * {
     @apply border-border outline-ring/50;
   }
+
   body {
     @apply bg-background text-foreground;
   }
+
   html {
     @apply font-sans;
   }

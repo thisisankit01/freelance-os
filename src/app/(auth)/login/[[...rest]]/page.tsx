@@ -11,7 +11,14 @@ export default function LoginPage() {
                 <SignIn
                     routing="path"
                     path="/login"
-                    fallbackRedirectUrl="/"
+                    forceRedirectUrl="/"
+                    appearance={{
+                        elements: {
+                            card: "shadow-lg border border-zinc-200 rounded-2xl",
+                            headerTitle: "text-xl font-semibold",
+                            formButtonPrimary: "bg-violet-600 hover:bg-violet-700",
+                        }
+                    }}
                 />
             </div>
         </div>
