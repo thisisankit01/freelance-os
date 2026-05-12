@@ -46,6 +46,14 @@ export function ProjectBoard() {
     }
   }, [user?.id]);
 
+  useEffect(() => {
+    const onRefresh = () => {
+      if (user?.id) load();
+    };
+    window.addEventListener("freelanceos:pm-refresh", onRefresh);
+    return () => window.removeEventListener("freelanceos:pm-refresh", onRefresh);
+  }, [user?.id]);
+
   async function load() {
     setLoading(true);
     const res = await fetch("/api/projects");

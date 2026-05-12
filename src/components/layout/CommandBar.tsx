@@ -1,11 +1,15 @@
 'use client'
 // src/components/layout/CommandBar.tsx
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useStore } from '@/lib/store'
 import { useUser } from '@clerk/nextjs'
 import { runAppointmentAiAction } from '@/lib/appointment-ai-actions'
+import { hydratePmChatFromStorage, usePmChatStore } from '@/lib/pm-chat-store'
+import { parsePmCommand, stripPlaceholderBrackets, type ParsedPmCommand } from '@/lib/pm-command-parser'
+import { runPmCommand } from '@/lib/pm-command-runner'
+import { isPmWorkspaceActive } from '@/lib/pm-workspace'
 
 const SUGGESTIONS = [
     "Who hasn't paid me?",
@@ -16,32 +20,122 @@ const SUGGESTIONS = [
     'Send reminder to client',
 ]
 
+const WORKSPACE_SUGGESTIONS = [
+    'list projects',
+    'add a project named [name]',
+    'show tasks in [project]',
+    'show all tasks',
+    'mark all tasks as done',
+    'clear filters',
+    'help',
+]
+
 interface CommandBarProps {
     isEmpty?: boolean
     greeting?: string
 }
 
+type WorkspaceChip = { label: string; payload: string }
+
+/** One primary surface at a time for PM commands (no ProjectBoard + TaskBoard stack). */
+function pmCommandSoloLayout(kind: ParsedPmCommand['kind']): 'ProjectBoard' | 'TaskBoard' | null {
+    switch (kind) {
+        case 'list_projects':
+        case 'create_project':
+        case 'rename_project':
+        case 'delete_project':
+            return 'ProjectBoard'
+        case 'show_tasks':
+        case 'filter_tasks_status':
+        case 'clear_filters':
+        case 'add_task':
+        case 'mark_task':
+        case 'mark_task_by_id':
+        case 'delete_task':
+        case 'delete_task_by_id':
+        case 'mark_all_tasks':
+            return 'TaskBoard'
+        default:
+            return null
+    }
+}
+
 export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) {
     const { user } = useUser()
+    const activeComponents = useStore((s) => s.activeComponents)
+    const workspaceMode = !isEmpty && isPmWorkspaceActive(activeComponents)
+
     const [input, setInput] = useState('')
     const [loading, setLoading] = useState(false)
     const [aiMessage, setAiMessage] = useState('')
+    const [workspaceChips, setWorkspaceChips] = useState<WorkspaceChip[] | null>(null)
     const [isListening, setIsListening] = useState(false)
     const inputRef = useRef<HTMLInputElement>(null)
-    const recRef = useRef<any>(null)
-    const stoppedManuallyRef = useRef(false)
+    const recRef = useRef<MediaRecorder | null>(null)
 
-    const { setComponents, setFilter, clearFilters, setEmptyMessage, setAppointmentAction, clearAppointmentAction, filters } = useStore()
+    const { setComponents, setFilter, clearFilters, setEmptyMessage, setAppointmentAction, clearAppointmentAction, filters } =
+        useStore()
+
+    useEffect(() => {
+        hydratePmChatFromStorage()
+    }, [])
 
     async function handleSubmit(prompt: string) {
         const trimmed = prompt.trim()
         if (!trimmed || loading) return
 
+        setWorkspaceChips(null)
         setLoading(true)
         setInput('')
-        setAiMessage('Thinking…')
 
         try {
+            let parsed = parsePmCommand(trimmed)
+            if (
+                parsed &&
+                (parsed.kind === 'confirm_yes' || parsed.kind === 'confirm_no') &&
+                !usePmChatStore.getState().pendingConfirm &&
+                !workspaceMode
+            ) {
+                parsed = null
+            }
+
+            if (parsed) {
+                setAiMessage('Working…')
+                if (
+                    !trimmed.startsWith('__pm:') &&
+                    parsed.kind !== 'confirm_yes' &&
+                    parsed.kind !== 'confirm_no' &&
+                    usePmChatStore.getState().pendingConfirm
+                ) {
+                    usePmChatStore.getState().setPendingConfirm(null)
+                }
+                usePmChatStore.getState().addUserMessage(trimmed)
+                try {
+                    const result = await runPmCommand(parsed)
+                    usePmChatStore.getState().addAssistantMessage(
+                        result.reply,
+                        result.chips?.map((c) => ({ label: c.label, payload: c.payload })),
+                    )
+                    window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+                    const plain = result.reply
+                        .replace(/\*\*(.+?)\*\*/g, '$1')
+                        .replace(/\n/g, ' · ')
+                    setAiMessage(plain.slice(0, 220))
+                    setWorkspaceChips(result.chips && result.chips.length > 0 ? result.chips : null)
+                    setTimeout(() => setAiMessage(''), 6000)
+                    const solo = pmCommandSoloLayout(parsed.kind)
+                    if (solo) setComponents([solo])
+                } catch (e) {
+                    const msg = e instanceof Error ? e.message : 'error'
+                    usePmChatStore.getState().addAssistantMessage(`Something went wrong: ${msg}`)
+                    setAiMessage('Workspace command failed')
+                    setTimeout(() => setAiMessage(''), 4000)
+                }
+                return
+            }
+
+            setAiMessage('Thinking…')
+
             const todayStr = new Date().toISOString().split('T')[0]
             const dayName = new Date().toLocaleString('en-US', { weekday: 'long' })
             const promptWithToday = `[TODAY: ${todayStr}, ${dayName}] ${trimmed}`
@@ -53,7 +147,63 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
 
             if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
-            const data = await res.json()
+            let data = (await res.json()) as {
+                reply?: string
+                changeUI?: boolean
+                components?: string[]
+                filters?: Record<string, string>
+                emptyMessage?: string
+                action?: string
+                appointmentData?: Record<string, unknown>
+            }
+
+            let pmRecoveredReply: string | null = null
+            if (data.action === 'create_project') {
+                const recovered = parsePmCommand(trimmed)
+                const rawName =
+                    recovered?.kind === 'create_project'
+                        ? recovered.name
+                        : typeof data.appointmentData?.projectTitle === 'string'
+                          ? (data.appointmentData.projectTitle as string)
+                          : null
+                if (rawName?.trim()) {
+                    usePmChatStore.getState().addUserMessage(trimmed)
+                    try {
+                        const result = await runPmCommand({
+                            kind: 'create_project',
+                            name: stripPlaceholderBrackets(rawName.trim()),
+                        })
+                        usePmChatStore.getState().addAssistantMessage(
+                            result.reply,
+                            result.chips?.map((c) => ({ label: c.label, payload: c.payload })),
+                        )
+                        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+                        pmRecoveredReply = result.reply
+                            .replace(/\*\*(.+?)\*\*/g, '$1')
+                            .replace(/\n/g, ' · ')
+                            .slice(0, 220)
+                    } catch (e) {
+                        const msg = e instanceof Error ? e.message : 'error'
+                        usePmChatStore.getState().addAssistantMessage(`Could not create project: ${msg}`)
+                        pmRecoveredReply = `Could not create project: ${msg}`
+                    }
+                } else {
+                    pmRecoveredReply =
+                        'Say the project name clearly, e.g. **add a project named Acme Corp** or **create project Acme**.'
+                }
+                data = {
+                    ...data,
+                    action: 'none',
+                    appointmentData: {},
+                }
+                if (!(data.components ?? []).includes('ProjectBoard')) {
+                    data = {
+                        ...data,
+                        changeUI: true,
+                        components: ['ProjectBoard', ...(data.components ?? [])],
+                    }
+                }
+            }
 
             clearFilters()
             clearAppointmentAction()
@@ -73,20 +223,20 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
                 'cancel_appointment',
                 'cancel_appointments_bulk',
             ])
-            const isAppointmentMutation =
-                Boolean(user?.id && data.action && APPOINTMENT_ACTIONS.has(data.action))
+            const isAppointmentMutation = Boolean(user?.id && data.action && APPOINTMENT_ACTIONS.has(data.action))
 
             let exec = null as Awaited<ReturnType<typeof runAppointmentAiAction>>
             if (isAppointmentMutation) {
                 exec = await runAppointmentAiAction({
                     userId: user!.id,
-                    action: data.action,
+                    action: data.action!,
                     data: (data.appointmentData ?? {}) as Record<string, unknown>,
                 })
                 if (exec?.ok && typeof window !== 'undefined') {
                     window.dispatchEvent(new CustomEvent('freelanceos:appointments'))
                 }
             } else if (
+                data.action !== 'create_project' &&
                 data.appointmentData &&
                 typeof data.appointmentData === 'object' &&
                 Object.keys(data.appointmentData).length > 0
@@ -101,11 +251,13 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
             if (exec) {
                 setAiMessage(exec.ok ? `${base} ${exec.message}`.trim() : exec.message)
                 setTimeout(() => setAiMessage(''), exec.ok ? 3200 : 5000)
+            } else if (pmRecoveredReply) {
+                setAiMessage(pmRecoveredReply)
+                setTimeout(() => setAiMessage(''), 6000)
             } else {
                 setAiMessage(base)
                 setTimeout(() => setAiMessage(''), 2500)
             }
-
         } catch (err) {
             console.error('CommandBar error:', err)
             setAiMessage('Something went wrong, try again')
@@ -116,10 +268,34 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
         }
     }
 
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (
+                e.key === '/' &&
+                !e.ctrlKey &&
+                !e.metaKey &&
+                document.activeElement?.tagName !== 'INPUT' &&
+                document.activeElement?.tagName !== 'TEXTAREA'
+            ) {
+                const target = document.querySelector<HTMLInputElement>('[data-pm-chat-input="true"]')
+                if (target && workspaceMode) {
+                    e.preventDefault()
+                    target.focus()
+                }
+            }
+        }
+        window.addEventListener('keydown', onKey)
+        return () => window.removeEventListener('keydown', onKey)
+    }, [workspaceMode])
+
     async function startVoice() {
         if (isListening) {
             if (recRef.current) {
-                try { recRef.current.stop() } catch (_) { }
+                try {
+                    recRef.current.stop()
+                } catch (_) {
+                    /* noop */
+                }
             }
             setIsListening(false)
             setAiMessage('')
@@ -131,12 +307,12 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
             const recorder = new MediaRecorder(stream)
             const chunks: Blob[] = []
 
-            recorder.ondataavailable = e => {
+            recorder.ondataavailable = (e) => {
                 if (e.data.size > 0) chunks.push(e.data)
             }
 
             recorder.onstop = async () => {
-                stream.getTracks().forEach(t => t.stop())
+                stream.getTracks().forEach((t) => t.stop())
                 if (chunks.length === 0) return
 
                 const blob = new Blob(chunks, { type: 'audio/webm' })
@@ -164,15 +340,14 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
             recRef.current = recorder
             setIsListening(true)
             setAiMessage('Listening…')
-
         } catch {
             setAiMessage('Mic access denied')
             setTimeout(() => setAiMessage(''), 2000)
         }
     }
 
-    // ── When isEmpty: fixed, vertically centered, full-screen overlay ──────────
-    // ── When !isEmpty: fixed to bottom as before ───────────────────────────────
+    const suggestionList = workspaceMode ? [...WORKSPACE_SUGGESTIONS, ...SUGGESTIONS.slice(0, 3)] : SUGGESTIONS
+
     return (
         <div
             className={
@@ -181,7 +356,6 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
                     : 'fixed bottom-6 left-1/2 -translate-x-1/2 w-full max-w-xl px-4 z-40'
             }
         >
-            {/* Welcome heading — only when centered (isEmpty) */}
             <AnimatePresence>
                 {isEmpty && (
                     <motion.div
@@ -197,17 +371,12 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
                                 {greeting}, {user.firstName} 👋
                             </h1>
                         )}
-                        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                            What do you want to work on today?
-                        </p>
+                        <p className="text-sm text-zinc-500 dark:text-zinc-400">What do you want to work on today?</p>
                     </motion.div>
                 )}
             </AnimatePresence>
 
-            {/* Constrain width when centered */}
             <div className={isEmpty ? 'w-full max-w-xl' : 'w-full backdrop-blur-md bg-white/30'}>
-
-                {/* AI status pill */}
                 <AnimatePresence>
                     {aiMessage && (
                         <motion.div
@@ -225,59 +394,94 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
                     )}
                 </AnimatePresence>
 
-                {/* Input pill */}
+                <AnimatePresence>
+                    {workspaceMode && workspaceChips && workspaceChips.length > 0 && (
+                        <motion.div
+                            key="ws-chips"
+                            initial={{ opacity: 0, y: 4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: 2 }}
+                            className="mb-2 flex flex-wrap gap-1.5 justify-center"
+                        >
+                            {workspaceChips.map((c) => (
+                                <button
+                                    key={c.payload + c.label}
+                                    type="button"
+                                    disabled={loading}
+                                    onClick={() => handleSubmit(c.payload)}
+                                    className="text-xs px-2.5 py-1 rounded-full bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40 transition-colors"
+                                >
+                                    {c.label}
+                                </button>
+                            ))}
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
                 <motion.div
                     initial={{ y: 20, opacity: 0 }}
                     animate={{ y: 0, opacity: 1 }}
                     className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-2xl shadow-lg shadow-zinc-200/50 dark:shadow-zinc-900/50 p-2 flex items-center gap-2"
                 >
-                    {/* Sparkle icon */}
                     <div className="w-7 h-7 rounded-xl bg-violet-600 flex items-center justify-center flex-shrink-0">
                         {loading ? (
                             <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                         ) : (
                             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
                                 <circle cx="7" cy="7" r="2.5" fill="white" />
-                                <path d="M7 2v1.5M7 10.5V12M2 7h1.5M10.5 7H12"
-                                    stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                                <path
+                                    d="M7 2v1.5M7 10.5V12M2 7h1.5M10.5 7H12"
+                                    stroke="white"
+                                    strokeWidth="1.5"
+                                    strokeLinecap="round"
+                                />
                             </svg>
                         )}
                     </div>
 
                     <input
                         ref={inputRef}
+                        {...(workspaceMode ? { 'data-pm-chat-input': 'true' } : {})}
                         value={input}
-                        onChange={e => setInput(e.target.value)}
-                        onKeyDown={e => {
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={(e) => {
                             if (e.key === 'Enter') handleSubmit(input)
                             if (e.key === 'Escape') setInput('')
                         }}
-                        placeholder="Ask anything… 'NYC clients' · 'create invoice' · 'who owes me?'"
+                        placeholder={
+                            workspaceMode
+                                ? 'Projects & tasks — or ask Aria: list projects · show tasks in … · help'
+                                : "Ask anything… 'NYC clients' · 'create invoice' · 'who owes me?'"
+                        }
                         disabled={loading}
                         className="flex-1 text-sm bg-transparent outline-none text-zinc-700 dark:text-zinc-300 placeholder:text-zinc-400 disabled:opacity-50"
                     />
 
-                    {/* Mic button */}
                     <button
                         type="button"
                         onClick={startVoice}
                         disabled={loading}
                         title={isListening ? 'Stop listening' : 'Voice command'}
-                        className={`hover:cursor-pointer flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all ${isListening
-                            ? 'bg-red-500 text-white shadow-md shadow-red-500/40'
-                            : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'
-                            } disabled:opacity-40`}
+                        className={`hover:cursor-pointer flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all ${
+                            isListening
+                                ? 'bg-red-500 text-white shadow-md shadow-red-500/40'
+                                : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                        } disabled:opacity-40`}
                     >
                         {isListening ? (
                             <span className="w-2.5 h-2.5 rounded-full bg-white animate-ping" />
                         ) : (
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                                <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+                                />
                             </svg>
                         )}
                     </button>
 
-                    {/* Send button */}
                     <AnimatePresence>
                         {input.trim() && !loading && (
                             <motion.button
@@ -293,7 +497,6 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
                     </AnimatePresence>
                 </motion.div>
 
-                {/* Suggestion chips */}
                 <AnimatePresence>
                     {!input && !loading && (
                         <motion.div
@@ -302,7 +505,7 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
                             exit={{ opacity: 0 }}
                             className="flex gap-1.5 mt-2 flex-wrap justify-center"
                         >
-                            {SUGGESTIONS.map(s => (
+                            {suggestionList.map((s) => (
                                 <button
                                     key={s}
                                     onClick={() => handleSubmit(s)}

@@ -1,53 +1,149 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useUser } from "@clerk/nextjs";
+import {
+  isThisWeek,
+  isToday,
+  isTomorrow,
+  parseISO,
+  startOfDay,
+} from "date-fns";
+import { usePmChatStore } from "@/lib/pm-chat-store";
 
-export function TaskBoard({ projectId }: { projectId?: string }) {
+type Task = {
+  id: string;
+  title: string;
+  status: string;
+  projects?: { id: string; title: string };
+  estimated_hours?: number;
+  due_date?: string;
+};
+
+export function TaskBoard({
+  projectId: projectIdProp,
+}: {
+  projectId?: string;
+}) {
   const { user } = useUser();
-  const [tasks, setTasks] = useState<
-    {
-      id: string;
-      title: string;
-      status: string;
-      projects?: { id: string; title: string };
-      estimated_hours?: number;
-      due_date?: string;
-    }[]
-  >([]);
+  const taskBoardProjectId = usePmChatStore((s) => s.taskBoardProjectId);
+  const taskBoardProjectTitle = usePmChatStore((s) => s.taskBoardProjectTitle);
+  const taskStatusFilter = usePmChatStore((s) => s.taskStatusFilter);
+  const clearTaskFilters = usePmChatStore((s) => s.clearTaskFilters);
+
+  const pmTaskFilterKey = `${taskBoardProjectId ?? ""}:${taskStatusFilter ?? ""}`;
+
+  const effectiveProjectId = projectIdProp ?? taskBoardProjectId ?? undefined;
+
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [projects, setProjects] = useState<{ id: string; title: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [newTask, setNewTask] = useState({
     title: "",
     estimated_hours: "",
-    project_id: projectId || "",
+    project_id: "",
     due_date: "",
   });
 
-  useEffect(() => {
-    if (user?.id) {
-      load();
-      if (!projectId) loadProjects();
+  const load = useCallback(async () => {
+    if (!user?.id) {
+      setTasks([]);
+      setLoading(false);
+      return;
     }
-  }, [user?.id, projectId]);
-
-  async function load() {
     setLoading(true);
+    const pm = usePmChatStore.getState();
+    const projectId = projectIdProp ?? pm.taskBoardProjectId ?? undefined;
+    const statusFilter = pm.taskStatusFilter;
     const params = new URLSearchParams();
     if (projectId) params.set("projectId", projectId);
+    if (
+      statusFilter &&
+      !statusFilter.startsWith("due:") &&
+      statusFilter !== "overdue"
+    ) {
+      params.set("status", statusFilter);
+    }
     const res = await fetch(`/api/tasks?${params}`);
     const json = await res.json();
     setTasks(json.data || []);
     setLoading(false);
-  }
+  }, [user?.id, projectIdProp]);
 
-  async function loadProjects() {
-    const res = await fetch("/api/projects");
-    const json = await res.json();
-    setProjects(json.data || []);
-  }
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void load();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [load, pmTaskFilterKey]);
+
+  useEffect(() => {
+    const onRefresh = () => load();
+    window.addEventListener("freelanceos:pm-refresh", onRefresh);
+    return () =>
+      window.removeEventListener("freelanceos:pm-refresh", onRefresh);
+  }, [load]);
+
+  useEffect(() => {
+    if (user?.id && !effectiveProjectId) {
+      fetch("/api/projects")
+        .then((r) => r.json())
+        .then((j) => setProjects(j.data || []));
+    }
+  }, [user?.id, effectiveProjectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setNewTask((p) => ({
+        ...p,
+        project_id: effectiveProjectId || p.project_id || "",
+      }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveProjectId]);
+
+  const displayedTasks = useMemo(() => {
+    const list = tasks;
+    const f = taskStatusFilter;
+    if (!f) return list;
+    if (f === "overdue") {
+      const today = startOfDay(new Date());
+      return list.filter((t) => {
+        if (t.status === "done") return false;
+        if (!t.due_date) return false;
+        try {
+          return startOfDay(parseISO(t.due_date)) < today;
+        } catch {
+          return false;
+        }
+      });
+    }
+    if (f.startsWith("due:")) {
+      const key = f.slice(4);
+      return list.filter((t) => {
+        if (!t.due_date) return false;
+        try {
+          const d = parseISO(t.due_date);
+          if (key === "today") return isToday(d);
+          if (key === "tomorrow") return isTomorrow(d);
+          if (key === "this week") return isThisWeek(d, { weekStartsOn: 1 });
+        } catch {
+          return false;
+        }
+        return false;
+      });
+    }
+    return list;
+  }, [tasks, taskStatusFilter]);
 
   async function createTask(e: React.FormEvent) {
     e.preventDefault();
@@ -61,13 +157,14 @@ export function TaskBoard({ projectId }: { projectId?: string }) {
           ? Number(newTask.estimated_hours)
           : null,
         due_date: newTask.due_date || null,
+        status: "todo",
       }),
     });
     if (res.ok) {
       setNewTask({
         title: "",
         estimated_hours: "",
-        project_id: projectId || "",
+        project_id: effectiveProjectId || "",
         due_date: "",
       });
       setShowForm(false);
@@ -87,27 +184,79 @@ export function TaskBoard({ projectId }: { projectId?: string }) {
 
   if (loading)
     return (
-      <div className="bg-white border rounded-xl p-8 animate-pulse">
+      <div className="bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-xl p-8 animate-pulse">
         Loading tasks...
       </div>
     );
 
+  const filterPills: { label: string; onRemove: () => void }[] = [];
+  if (effectiveProjectId) {
+    filterPills.push({
+      label: `Project: ${taskBoardProjectTitle ?? "selected"}`,
+      onRemove: () => {
+        usePmChatStore.getState().setTaskView(null, null);
+        window.dispatchEvent(new Event("freelanceos:pm-refresh"));
+      },
+    });
+  }
+  if (taskStatusFilter) {
+    filterPills.push({
+      label: `Filter: ${taskStatusFilter}`,
+      onRemove: () => {
+        usePmChatStore.getState().setTaskStatusFilter(null);
+        window.dispatchEvent(new Event("freelanceos:pm-refresh"));
+      },
+    });
+  }
+
   return (
     <motion.div
       layoutId="TaskBoard"
-      className="bg-white border border-zinc-100 rounded-xl p-5"
+      className="bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-xl p-5"
     >
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-semibold text-zinc-800">
-          Tasks {projectId ? "" : "(All)"}
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="text-lg font-semibold text-zinc-800 dark:text-zinc-200">
+          Tasks {effectiveProjectId ? "" : "(All)"}
         </h2>
         <button
+          type="button"
           onClick={() => setShowForm(!showForm)}
           className="text-xs bg-violet-600 text-white px-3 py-1.5 rounded-lg"
         >
           {showForm ? "Cancel" : "+ Add Task"}
         </button>
       </div>
+
+      {filterPills.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-3">
+          {filterPills.map((pill) => (
+            <span
+              key={pill.label}
+              className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-violet-50 dark:bg-violet-950/50 text-violet-700 dark:text-violet-300 border border-violet-100 dark:border-violet-900"
+            >
+              {pill.label}
+              <button
+                type="button"
+                className="hover:text-violet-900 dark:hover:text-violet-100"
+                onClick={pill.onRemove}
+                aria-label={`Remove ${pill.label}`}
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              clearTaskFilters();
+              window.dispatchEvent(new Event("freelanceos:pm-refresh"));
+            }}
+            className="text-[11px] text-zinc-500 underline"
+          >
+            Clear all
+          </button>
+        </div>
+      )}
 
       {showForm && (
         <form onSubmit={createTask} className="mb-4 space-y-2">
@@ -118,16 +267,16 @@ export function TaskBoard({ projectId }: { projectId?: string }) {
             onChange={(e) =>
               setNewTask((p) => ({ ...p, title: e.target.value }))
             }
-            className="w-full text-sm border rounded-lg px-3 py-2"
+            className="w-full text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 bg-white dark:bg-zinc-950"
           />
-          {!projectId && (
+          {!effectiveProjectId && (
             <select
               value={newTask.project_id}
               required
               onChange={(e) =>
                 setNewTask((p) => ({ ...p, project_id: e.target.value }))
               }
-              className="w-full text-sm border rounded-lg px-3 py-2"
+              className="w-full text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 bg-white dark:bg-zinc-950"
             >
               <option value="">Select project</option>
               {projects.map((p) => (
@@ -145,7 +294,7 @@ export function TaskBoard({ projectId }: { projectId?: string }) {
               onChange={(e) =>
                 setNewTask((p) => ({ ...p, estimated_hours: e.target.value }))
               }
-              className="flex-1 text-sm border rounded-lg px-3 py-2"
+              className="flex-1 text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 bg-white dark:bg-zinc-950"
             />
             <input
               type="date"
@@ -153,7 +302,7 @@ export function TaskBoard({ projectId }: { projectId?: string }) {
               onChange={(e) =>
                 setNewTask((p) => ({ ...p, due_date: e.target.value }))
               }
-              className="flex-1 text-sm border rounded-lg px-3 py-2"
+              className="flex-1 text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 bg-white dark:bg-zinc-950"
             />
           </div>
           <button
@@ -166,32 +315,35 @@ export function TaskBoard({ projectId }: { projectId?: string }) {
       )}
 
       <div className="space-y-2">
-        {tasks.map((task) => (
+        {displayedTasks.map((task) => (
           <div
             key={task.id}
-            className="flex items-center gap-3 p-3 border rounded-lg hover:bg-zinc-50"
+            className="flex items-center gap-3 p-3 border border-zinc-100 dark:border-zinc-800 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
           >
             <button
+              type="button"
               onClick={() => toggleTask(task.id, task.status)}
-              className={`w-5 h-5 rounded border-2 flex items-center justify-center ${
+              className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
                 task.status === "done"
                   ? "bg-emerald-500 border-emerald-500"
-                  : "border-zinc-300"
+                  : "border-zinc-300 dark:border-zinc-600"
               }`}
             >
               {task.status === "done" && (
                 <span className="text-white text-xs">✓</span>
               )}
             </button>
-            <div className="flex-1">
+            <div className="flex-1 min-w-0">
               <p
-                className={`text-sm ${task.status === "done" ? "line-through text-zinc-400" : "text-zinc-800"}`}
+                className={`text-sm ${task.status === "done" ? "line-through text-zinc-400" : "text-zinc-800 dark:text-zinc-200"}`}
               >
                 {task.title}
               </p>
-              <div className="flex gap-2 text-[10px] text-zinc-400">
+              <div className="flex gap-2 text-[10px] text-zinc-400 flex-wrap">
                 {task.projects?.title && <span>{task.projects.title}</span>}
-                {task.estimated_hours && <span>~{task.estimated_hours}h</span>}
+                {task.estimated_hours != null && (
+                  <span>~{task.estimated_hours}h</span>
+                )}
                 {task.due_date && (
                   <span>
                     Due {new Date(task.due_date).toLocaleDateString("en-IN")}
@@ -200,20 +352,22 @@ export function TaskBoard({ projectId }: { projectId?: string }) {
               </div>
             </div>
             <span
-              className={`text-[10px] px-2 py-0.5 rounded-full ${
+              className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${
                 task.status === "done"
-                  ? "bg-emerald-50 text-emerald-600"
+                  ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400"
                   : task.status === "in_progress"
-                    ? "bg-amber-50 text-amber-600"
-                    : "bg-zinc-100 text-zinc-500"
+                    ? "bg-amber-50 text-amber-600 dark:bg-amber-950 dark:text-amber-400"
+                    : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
               }`}
             >
               {task.status}
             </span>
           </div>
         ))}
-        {tasks.length === 0 && (
-          <p className="text-sm text-zinc-400 text-center py-4">No tasks yet</p>
+        {displayedTasks.length === 0 && (
+          <p className="text-sm text-zinc-400 text-center py-4">
+            No tasks match this view.
+          </p>
         )}
       </div>
     </motion.div>

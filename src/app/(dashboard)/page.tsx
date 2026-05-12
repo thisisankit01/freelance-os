@@ -23,6 +23,8 @@ import { TaskBoard } from "@/components/registry/TaskBoard";
 import { TimeTracker } from "@/components/registry/TimeTracker";
 import { ProjectProfit } from "@/components/registry/ProjectProfit";
 import { greetingMessageAccordingToTimeZone } from "@/lib/utils";
+import { PmUrlSync } from "@/components/layout/PmUrlSync";
+import { isPmWorkspaceActive } from "@/lib/pm-workspace";
 
 const REGISTRY: Record<string, React.ComponentType> = {
   StatsBar,
@@ -47,6 +49,7 @@ export default function Dashboard() {
   const [greeting, setGreeting] = useState<string>("Good Morning 👋");
   const { activeComponents } = useStore();
   const isEmpty = activeComponents.length === 0;
+  const showPmWorkspace = !isEmpty && isPmWorkspaceActive(activeComponents);
 
   useEffect(() => {
     greetingMessageAccordingToTimeZone((value: string) => setGreeting(value));
@@ -76,7 +79,9 @@ export default function Dashboard() {
             }}
           />
 
-          <div className="max-w-3xl mx-auto px-4 pt-28 pb-52">
+          <div
+            className="max-w-3xl mx-auto px-4 pt-28 pb-52"
+          >
             <div className="mb-6">
               {user && (
                 <>
@@ -115,6 +120,7 @@ export default function Dashboard() {
         </>
       )}
 
+      <PmUrlSync enabled={showPmWorkspace} />
       <CommandBar isEmpty={isEmpty} greeting={greeting} />
     </div>
   );

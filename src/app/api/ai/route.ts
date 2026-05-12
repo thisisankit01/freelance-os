@@ -285,7 +285,9 @@ REMINDERS ("remind Rahul about tomorrow", "send reminder", "nudge client about c
   • "tasks", "todo", "my tasks" → TaskBoard
   • "timer", "track time", "start timer", "stop timer" → TimeTracker
   • "profit", "hourly rate", "project earnings" → ProjectProfit
-  • "new project", "create project" → ProjectBoard with action context
+  • "new project", "create project", "add a project named …" → changeUI: true, components: ["ProjectBoard"], action: "none", filters: {}
+    NEVER set action to "create_project" or any value except the appointment actions below or "none". Projects are created by the command bar (client); you only open ProjectBoard and reply briefly (e.g. "Opening projects — type create project [name] in the bar to add one.").
+  • TASKS BY PROJECT — same meaning even if phrased differently or mistyped: "show tasks in X", "sho tasks in X", "tasks in X", "task for X", "open tasks for X", "list tasks in X" → components **["TaskBoard","ProjectBoard"]**, action "none". You cannot fuzzy-match their DB project names; tell them the command bar will suggest closest names, or to say **list projects** first.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DATE/TIME AWARENESS (CRITICAL):
@@ -336,7 +338,7 @@ RESPONSE FORMAT (always valid JSON):
   "changeUI": true or false,
   "components": ["StatsBar", "ClientTable"],   // only when changeUI is true
   "filters": { "city": "Mumbai" },             // only when changeUI is true, only if filtering
-  "action": "none",                            // or "create_appointment" | "create_appointments_bulk" | "cancel_appointment" | "cancel_appointments_bulk"
+  "action": "none",                            // ONLY: "none" | "create_appointment" | "create_appointments_bulk" | "cancel_appointment" | "cancel_appointments_bulk" — never "create_project" or other invented values
   "appointmentData": {
     "bulkScope": "date_client",
     "date": "2026-05-18",
