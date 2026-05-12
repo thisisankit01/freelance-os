@@ -30,13 +30,17 @@ export function ConnectGoogleCalendar() {
             }
             const count = data.synced ?? 0
             const matched = data.totalMatched ?? 0
-            setSyncMsg(
-                count > 0
-                    ? `✓ ${count} event${count > 1 ? 's' : ''} synced`
-                    : matched > 0
-                        ? `Already up to date (${matched} event${matched > 1 ? 's' : ''} matched)`
-                        : 'No matching events found'
-            )
+            const removed = data.markedCancelled ?? 0
+            const parts: string[] = []
+            if (count > 0) parts.push(`${count} new event${count > 1 ? 's' : ''} synced`)
+            if (removed > 0) parts.push(`${removed} cancelled in Google cleared here`)
+            if (parts.length > 0) {
+                setSyncMsg(`✓ ${parts.join(' · ')}`)
+            } else if (matched > 0) {
+                setSyncMsg(`Already up to date (${matched} active event${matched > 1 ? 's' : ''})`)
+            } else {
+                setSyncMsg('No matching events found')
+            }
             // Always show calendar and trigger a refetch regardless of synced count
             setComponents(['BookingCalendar'])
             window.dispatchEvent(new Event('freelanceos:appointments'))

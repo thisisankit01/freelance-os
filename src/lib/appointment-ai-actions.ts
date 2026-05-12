@@ -3,40 +3,53 @@ import { supabase } from '@/lib/supabase'
 
 export type AppointmentAiResult = { ok: true; message: string } | { ok: false; message: string }
 
-/** Runs create / cancel / bulk-cancel from the command bar so it does not depend on BookingCalendar mounting. */
+type MeetingSlot = {
+    clientName?: string
+    date: string
+    time: string
+    title?: string
+    notes?: string
+}
+
+/** Runs create / cancel / bulk from the command bar so it does not depend on BookingCalendar mounting. */
 export async function runAppointmentAiAction(params: {
     userId: string
     action: string
-    data: Record<string, string | undefined>
+    data: Record<string, unknown>
 }): Promise<AppointmentAiResult | null> {
     const { userId, action, data } = params
 
     if (action === 'create_appointment') {
         let clientId: string | null = null
-        if (data.clientName) {
+        const clientName = typeof data.clientName === 'string' ? data.clientName : undefined
+        if (clientName) {
             const { data: found } = await supabase
                 .from('clients')
                 .select('id')
                 .eq('user_id', userId)
-                .ilike('name', `%${data.clientName}%`)
+                .ilike('name', `%${clientName}%`)
                 .limit(1)
             clientId = found?.[0]?.id ?? null
             if (!clientId) {
-                return { ok: false, message: `Client "${data.clientName}" not found. Add them first.` }
+                return { ok: false, message: `Client "${clientName}" not found. Add them first.` }
             }
         }
-        const dateStr = data.date || format(new Date(), 'yyyy-MM-dd')
-        const timeStr = data.time || '09:00'
+        const dateStr = (typeof data.date === 'string' && data.date) || format(new Date(), 'yyyy-MM-dd')
+        const timeStr = (typeof data.time === 'string' && data.time) || '09:00'
         const startTime = new Date(`${dateStr}T${timeStr}:00`)
+        const title =
+            (typeof data.title === 'string' && data.title) ||
+            `Meeting${clientName ? ` with ${clientName}` : ''}`
+        const notes = typeof data.notes === 'string' ? data.notes : null
         const res = await fetch('/api/appointments', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 action: 'create',
                 clientId,
-                title: data.title || `Meeting${data.clientName ? ` with ${data.clientName}` : ''}`,
+                title,
                 startTime: startTime.toISOString(),
-                notes: data.notes || null,
+                notes,
             }),
         })
         const json = await res.json()
@@ -44,7 +57,53 @@ export async function runAppointmentAiAction(params: {
         return { ok: true, message: `Scheduled for ${format(startTime, 'MMM d, h:mm a')}` }
     }
 
-    if (action === 'cancel_appointment' && data.clientName) {
+    if (action === 'create_appointments_bulk') {
+        const meetingsJson = typeof data.meetingsJson === 'string' ? data.meetingsJson : null
+        if (!meetingsJson?.trim()) {
+            return { ok: false, message: 'No meeting list — say each client, date, and time.' }
+        }
+        let slots: MeetingSlot[]
+        try {
+            slots = JSON.parse(meetingsJson) as MeetingSlot[]
+        } catch {
+            return { ok: false, message: 'Could not read meeting list.' }
+        }
+        if (!Array.isArray(slots) || slots.length === 0) {
+            return { ok: false, message: 'No valid meetings in the list.' }
+        }
+
+        const meetings = slots
+            .filter((s) => s && typeof s.date === 'string' && typeof s.time === 'string')
+            .map((s) => {
+                const startTime = new Date(`${s.date}T${s.time}:00`)
+                return {
+                    clientName: typeof s.clientName === 'string' ? s.clientName : undefined,
+                    title:
+                        (typeof s.title === 'string' && s.title) ||
+                        (s.clientName ? `Meeting with ${s.clientName}` : 'Meeting'),
+                    startTime: startTime.toISOString(),
+                    notes: typeof s.notes === 'string' ? s.notes : undefined,
+                }
+            })
+
+        if (meetings.length === 0) {
+            return { ok: false, message: 'Each meeting needs a date and time (YYYY-MM-DD and HH:mm).' }
+        }
+
+        const res = await fetch('/api/appointments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'create_bulk', meetings }),
+        })
+        const json = await res.json()
+        if (!res.ok) return { ok: false, message: json.error || 'Bulk create failed' }
+        return {
+            ok: true,
+            message: `Created ${json.createdCount} meeting(s).`,
+        }
+    }
+
+    if (action === 'cancel_appointment' && typeof data.clientName === 'string' && data.clientName) {
         const res = await fetch('/api/appointments', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -58,15 +117,16 @@ export async function runAppointmentAiAction(params: {
         }
     }
 
-    if (action === 'cancel_appointments_bulk' && data.bulkScope) {
+    if (action === 'cancel_appointments_bulk' && typeof data.bulkScope === 'string') {
         const res = await fetch('/api/appointments', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 action: 'cancel_bulk',
                 bulkScope: data.bulkScope,
-                month: data.month,
-                clientName: data.clientName,
+                month: typeof data.month === 'string' ? data.month : undefined,
+                date: typeof data.date === 'string' ? data.date : undefined,
+                clientName: typeof data.clientName === 'string' ? data.clientName : undefined,
             }),
         })
         const json = await res.json()
@@ -75,12 +135,12 @@ export async function runAppointmentAiAction(params: {
             return {
                 ok: false,
                 message:
-                    'No native meetings matched (already past, not linked to this client, or only Google Calendar events — cancel those in Google).',
+                    'No FreelanceOS-native meetings matched (past, wrong client, or only Google-linked events). Sync calendar to refresh Google copies.',
             }
         }
         return {
             ok: true,
-            message: `Cancelled ${json.cancelledCount} meeting(s). Google events still need Google Calendar.`,
+            message: `Cancelled ${json.cancelledCount} FreelanceOS meeting(s).`,
         }
     }
 

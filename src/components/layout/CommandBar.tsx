@@ -69,6 +69,7 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
 
             const APPOINTMENT_ACTIONS = new Set([
                 'create_appointment',
+                'create_appointments_bulk',
                 'cancel_appointment',
                 'cancel_appointments_bulk',
             ])
@@ -80,7 +81,7 @@ export function CommandBar({ isEmpty = false, greeting = '' }: CommandBarProps) 
                 exec = await runAppointmentAiAction({
                     userId: user!.id,
                     action: data.action,
-                    data: (data.appointmentData ?? {}) as Record<string, string | undefined>,
+                    data: (data.appointmentData ?? {}) as Record<string, unknown>,
                 })
                 if (exec?.ok && typeof window !== 'undefined') {
                     window.dispatchEvent(new CustomEvent('freelanceos:appointments'))

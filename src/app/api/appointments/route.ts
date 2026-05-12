@@ -38,6 +38,15 @@ async function resolveClientIdByHint(userId: string, hint: string): Promise<stri
     return scored[0]?.id ?? null
 }
 
+/** "Priya, Rahul" → ["Priya", "Rahul"] for bulk cancel across clients */
+function splitClientNameList(raw: string | undefined): string[] {
+    if (!raw?.trim()) return []
+    return raw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+}
+
 // Format date to iCal format: 20260511T150000Z
 function toICSDate(d: Date): string {
     return d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
@@ -145,6 +154,71 @@ export async function POST(req: Request) {
         }
 
         return Response.json({ data, emailSent: !!clientId })
+    }
+
+    // ── BULK CREATE (native meetings; same rules as create) ─────────────────
+    if (action === 'create_bulk') {
+        const meetings = payload.meetings as Array<{
+            clientId?: string | null
+            clientName?: string
+            title?: string
+            startTime?: string
+            endTime?: string | null
+            notes?: string | null
+            durationMinutes?: number
+        }>
+
+        if (!Array.isArray(meetings) || meetings.length === 0) {
+            return Response.json({ error: 'meetings must be a non-empty array' }, { status: 400 })
+        }
+        if (meetings.length > 40) {
+            return Response.json({ error: 'Maximum 40 meetings per request' }, { status: 400 })
+        }
+
+        let createdCount = 0
+        for (const m of meetings) {
+            const title = typeof m.title === 'string' ? m.title.trim() : ''
+            const startTime = m.startTime
+            if (!title || !startTime) continue
+
+            let resolvedClientId: string | null = typeof m.clientId === 'string' && m.clientId ? m.clientId : null
+            if (!resolvedClientId && typeof m.clientName === 'string' && m.clientName.trim()) {
+                resolvedClientId = await resolveClientIdByHint(userId, m.clientName.trim())
+            }
+
+            const start = new Date(startTime)
+            const end = m.endTime
+                ? new Date(m.endTime)
+                : new Date(start.getTime() + (m.durationMinutes ?? 60) * 60 * 1000)
+
+            const { data, error } = await supabaseAdmin
+                .from('appointments')
+                .insert({
+                    user_id: userId,
+                    client_id: resolvedClientId,
+                    title,
+                    start_time: start.toISOString(),
+                    end_time: end.toISOString(),
+                    notes: m.notes || null,
+                    status: 'scheduled',
+                })
+                .select()
+                .single()
+
+            if (error) continue
+            createdCount++
+            if (resolvedClientId && data) {
+                sendCalendarInvite(data.id, resolvedClientId, title, start, end, m.notes ?? undefined).catch(console.error)
+            }
+        }
+
+        if (createdCount === 0) {
+            return Response.json(
+                { error: 'No meetings were created — check client names, dates, and times.' },
+                { status: 400 },
+            )
+        }
+        return Response.json({ ok: true, createdCount })
     }
 
     // ── RESCHEDULE ───────────────────────────────────────────────────────────
@@ -270,21 +344,35 @@ export async function POST(req: Request) {
         const month = payload.month as string | undefined
         const clientName = payload.clientName as string | undefined
 
-        const allowed = new Set(['month', 'client', 'month_client', 'all_future'])
+        const dayDate = payload.date as string | undefined
+
+        const allowed = new Set(['month', 'client', 'month_client', 'date_client', 'all_future'])
         if (!bulkScope || !allowed.has(bulkScope)) {
-            return Response.json({ error: 'bulkScope must be month, client, month_client, or all_future' }, { status: 400 })
+            return Response.json({
+                error: 'bulkScope must be month, client, month_client, date_client, or all_future',
+            }, { status: 400 })
         }
         if ((bulkScope === 'month' || bulkScope === 'month_client') && !month?.trim()) {
             return Response.json({ error: 'month (YYYY-MM) is required for this bulk action' }, { status: 400 })
         }
-        if ((bulkScope === 'client' || bulkScope === 'month_client') && !clientName?.trim()) {
+        if (bulkScope === 'date_client' && !dayDate?.trim()) {
+            return Response.json({ error: 'date (YYYY-MM-DD) is required for date_client' }, { status: 400 })
+        }
+        if ((bulkScope === 'client' || bulkScope === 'month_client' || bulkScope === 'date_client') && !clientName?.trim()) {
             return Response.json({ error: 'clientName is required for this bulk action' }, { status: 400 })
         }
 
-        let clientId: string | undefined
-        if (bulkScope === 'client' || bulkScope === 'month_client') {
-            clientId = (await resolveClientIdByHint(userId, clientName!.trim())) ?? undefined
-            if (!clientId) return Response.json({ error: `No client named "${clientName}"` }, { status: 404 })
+        let clientIds: string[] = []
+        if (bulkScope === 'client' || bulkScope === 'month_client' || bulkScope === 'date_client') {
+            const hints = splitClientNameList(clientName)
+            for (const h of hints) {
+                const id = await resolveClientIdByHint(userId, h)
+                if (id) clientIds.push(id)
+            }
+            clientIds = [...new Set(clientIds)]
+            if (clientIds.length === 0) {
+                return Response.json({ error: `No client matched "${clientName}"` }, { status: 404 })
+            }
         }
 
         const nowIso = new Date().toISOString()
@@ -299,6 +387,16 @@ export async function POST(req: Request) {
             }
             startIso = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0, 0)).toISOString()
             endIso = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999)).toISOString()
+        } else if (bulkScope === 'date_client') {
+            const parts = dayDate!.trim().split('-').map(Number)
+            const y = parts[0]
+            const m = parts[1]
+            const d = parts[2]
+            if (!y || !m || !d || m < 1 || m > 12 || d < 1 || d > 31) {
+                return Response.json({ error: 'date must be YYYY-MM-DD' }, { status: 400 })
+            }
+            startIso = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0)).toISOString()
+            endIso = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999)).toISOString()
         }
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -311,22 +409,25 @@ export async function POST(req: Request) {
 
         let rows: { id: string; source: string | null }[] = []
 
-        if (bulkScope === 'client' || bulkScope === 'month_client') {
-            const hint = clientName!.trim().replace(/[%_\\,]/g, ' ').replace(/\s+/g, ' ').trim()
-
-            const qByClient = applyTime(
+        if (bulkScope === 'client' || bulkScope === 'month_client' || bulkScope === 'date_client') {
+            let qByClient = applyTime(
                 supabaseAdmin
                     .from('appointments')
                     .select('id, source')
                     .eq('user_id', userId)
-                    .eq('status', 'scheduled')
-                    .eq('client_id', clientId!),
+                    .eq('status', 'scheduled'),
             )
+            qByClient =
+                clientIds.length === 1
+                    ? qByClient.eq('client_id', clientIds[0]!)
+                    : qByClient.in('client_id', clientIds)
             const { data: byClient, error: e1 } = await qByClient
             if (e1) return Response.json({ error: e1.message }, { status: 500 })
             rows = [...(byClient || [])]
 
-            if (hint.length >= 2) {
+            for (const namePart of splitClientNameList(clientName)) {
+                const hint = namePart.replace(/[%_\\,]/g, ' ').replace(/\s+/g, ' ').trim()
+                if (hint.length < 2) continue
                 const qByTitle = applyTime(
                     supabaseAdmin
                         .from('appointments')

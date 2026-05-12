@@ -24,6 +24,10 @@ const VALID_COMPONENTS = [
     'AppointmentCard',
     'SlotPicker',
     'ReminderSender',
+    'ProjectBoard',
+    'TaskBoard', 
+    'TimeTracker',
+    'ProjectProfit'
 ] as const
 
 type Component = typeof VALID_COMPONENTS[number]
@@ -38,17 +42,20 @@ export type AriaResponse = {
         search?: string
         week?: string      // 'current' for "this week" queries
     }
-    action?: string        // 'none' | 'create_appointment' | 'cancel_appointment' | 'cancel_appointments_bulk'
+    action?: string        // 'none' | 'create_appointment' | 'create_appointments_bulk' | 'cancel_appointment' | 'cancel_appointments_bulk'
     appointmentData?: {
         clientName?: string
+        /** YYYY-MM-DD — create_appointment start date, OR cancel date_client bulk target day */
         date?: string
         time?: string
         title?: string
         notes?: string
-        /** bulk cancel: 'month' | 'client' | 'month_client' | 'all_future' */
+        /** bulk cancel: 'month' | 'client' | 'month_client' | 'date_client' | 'all_future' */
         bulkScope?: string
         /** YYYY-MM, required for month / month_client */
         month?: string
+        /** JSON array of { clientName?, date, time, title?, notes? } — set by sanitise from AI "meetings" */
+        meetingsJson?: string
     }
     emptyMessage?: string
 }
@@ -80,6 +87,7 @@ function sanitise(raw: Record<string, unknown>): AriaResponse {
     /** BookingCalendar runs create/cancel/bulk side effects — it must mount or nothing happens */
     const APPOINTMENT_UI_ACTIONS = new Set([
         'create_appointment',
+        'create_appointments_bulk',
         'cancel_appointment',
         'cancel_appointments_bulk',
     ])
@@ -109,6 +117,22 @@ function sanitise(raw: Record<string, unknown>): AriaResponse {
     const appointmentData = typeof rawApptData === 'object' && rawApptData !== null
         ? (rawApptData as Record<string, unknown>)
         : undefined
+
+    let meetingsJson: string | undefined
+    if (appointmentData && Array.isArray(appointmentData.meetings)) {
+        const slots = appointmentData.meetings
+            .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null)
+            .map((m) => ({
+                clientName: typeof m.clientName === 'string' ? m.clientName : undefined,
+                date: typeof m.date === 'string' ? m.date : '',
+                time: typeof m.time === 'string' ? m.time : '',
+                title: typeof m.title === 'string' ? m.title : undefined,
+                notes: typeof m.notes === 'string' ? m.notes : undefined,
+            }))
+            .filter((s) => s.date && s.time)
+        if (slots.length > 0) meetingsJson = JSON.stringify(slots)
+    }
+
     const safeAppt: AriaResponse['appointmentData'] = appointmentData
         ? {
             ...(typeof appointmentData.clientName === 'string' ? { clientName: appointmentData.clientName } : {}),
@@ -118,6 +142,7 @@ function sanitise(raw: Record<string, unknown>): AriaResponse {
             ...(typeof appointmentData.notes === 'string' ? { notes: appointmentData.notes } : {}),
             ...(typeof appointmentData.bulkScope === 'string' ? { bulkScope: appointmentData.bulkScope } : {}),
             ...(typeof appointmentData.month === 'string' ? { month: appointmentData.month } : {}),
+            ...(meetingsJson ? { meetingsJson } : {}),
         }
         : undefined
 
@@ -129,6 +154,45 @@ function sanitise(raw: Record<string, unknown>): AriaResponse {
         action: actionStr,
         appointmentData: safeAppt && Object.keys(safeAppt).length > 0 ? safeAppt : undefined,
         emptyMessage,
+    }
+}
+
+/** Model sometimes picks month_client when the user asked for a single calendar day — fix before running the action. */
+function reconcileBulkCancelDayVsMonth(userPrompt: string, response: AriaResponse): AriaResponse {
+    if (response.action !== 'cancel_appointments_bulk' || !response.appointmentData) return response
+    const ad = response.appointmentData
+    if (ad.bulkScope !== 'month_client' || !ad.month || !ad.clientName) return response
+
+    if (/\b(?:all|whole|entire)\s+month\b|\bthroughout\b|\beverything\s+in\b|\b(?:all|every)\s+meetings?\s+(?:with|for)\b.*\b(?:in|this)\s+month\b/i.test(userPrompt)) {
+        return response
+    }
+
+    const dayMatch =
+        userPrompt.match(/\b(?:on|for)\s+the\s+(\d{1,2})(?:st|nd|rd|th)?\b/i) ||
+        userPrompt.match(/\b(?:on|for)\s+(\d{1,2})(?:st|nd|rd|th)\b/i)
+    if (!dayMatch) return response
+
+    const day = Math.min(31, Math.max(1, parseInt(dayMatch[1], 10)))
+    const ym = ad.month.trim()
+    const parts = ym.split('-').map(Number)
+    const y = parts[0]
+    const m = parts[1]
+    if (!y || !m || m < 1 || m > 12) return response
+
+    const test = new Date(Date.UTC(y, m - 1, day))
+    if (test.getUTCFullYear() !== y || test.getUTCMonth() !== m - 1 || test.getUTCDate() !== day) {
+        return response
+    }
+
+    const dateStr = `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    return {
+        ...response,
+        appointmentData: {
+            ...ad,
+            bulkScope: 'date_client',
+            date: dateStr,
+            month: undefined,
+        },
     }
 }
 
@@ -150,6 +214,10 @@ WHAT YOU CAN SHOW (the dashboard components):
 - SlotPicker      → available time slot picker — book a slot for a client
 - ReminderSender  → list upcoming appointments with a "Remind" button to email the client
 - EmptyState      → shown when nothing relevant exists
+- ProjectBoard    → kanban board for projects (todo/in-progress/review/done/on-hold)
+- TaskBoard       → task list with checkboxes per project
+- TimeTracker     → start/stop timer for billable hours
+- ProjectProfit   → budget vs hours = hourly rate per project
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 HOW TO HANDLE DIFFERENT MESSAGES:
@@ -169,15 +237,32 @@ CALENDAR / APPOINTMENTS ("show calendar", "schedule meeting", "what meetings thi
   • "show calendar" / "my schedule" / "appointments" = just show the calendar, action: "none"
   • "schedule" / "book" / "set up meeting" / "arrange call" = action: "create_appointment"
     - Extract: clientName, date (resolve relative dates to YYYY-MM-DD), time (24h HH:mm), title
+  • BULK create ("schedule 3 calls with Priya, Rahul, Sam next week", "book multiple meetings") = action: "create_appointments_bulk"
+    - appointmentData.meetings MUST be an array of objects, each with: "date" (YYYY-MM-DD), "time" (HH:mm), optional "clientName", optional "title", optional "notes"
+    - Example: two clients different days → "meetings": [{ "clientName": "Priya", "date": "2026-05-14", "time": "10:00" }, { "clientName": "Rahul", "date": "2026-05-15", "time": "14:00" }]
   • "what meetings" / "meetings this week" = action: "none", filters: { week: "current" }
   • SINGLE cancel ("cancel my meeting with Rahul", "remove Priya's call") = action: "cancel_appointment", appointmentData: { clientName }
-  • BULK cancel — MUST use action: "cancel_appointments_bulk" with appointmentData.bulkScope and optional month / clientName:
-    - "cancel all my meetings this month" / "clear my schedule for May" → bulkScope: "month", month: "YYYY-MM" (from [TODAY])
-    - "cancel all meetings with Priya" / "wipe all appointments for client X" → bulkScope: "client", clientName (all upcoming native meetings for that client)
-    - "cancel all meetings with Rahul this month" → bulkScope: "month_client", month, clientName
-    - "cancel everything upcoming" / "clear all future meetings" → bulkScope: "all_future" (no month, no clientName)
-  • GOOGLE CALENDAR (events synced from Google, shown with a link icon in the app): we only have read-only sync. NEVER use cancel_appointment / cancel_appointments_bulk to "cancel Google" — those actions only cancel FreelanceOS-native meetings. In your reply, always mention that Google Calendar events must be cancelled manually in Google Calendar if relevant.
-  • MANDATORY: If action is create_appointment, cancel_appointment, or cancel_appointments_bulk, put "BookingCalendar" FIRST in components (that component performs the action). Never use only StatsBar/ClientTable for those actions.
+  • BULK cancel — action: "cancel_appointments_bulk". Pick bulkScope by INTENT (not keywords alone). Use [TODAY] for every relative date.
+
+  ═══ DATE vs MONTH (critical — users get angry if you confuse these) ═══
+  • ONE calendar day + client → bulkScope: "date_client" + appointmentData.date "YYYY-MM-DD" + clientName.
+    Examples: "cancel meetings with Srija on the 18th", "wipe my calls with Rahul on May 18", "clear Priya on 18/5", "drop everything with Sam tomorrow" (date = day after [TODAY]).
+    "The 18th" / "on the 18th" without a different month → use the month from [TODAY] unless they said another month (e.g. "June 18" → that month-day).
+    NEVER use month_client for these — month_client cancels EVERY meeting that month with that client.
+
+  • WHOLE calendar month (no specific day) → bulkScope: "month" OR "month_client" + month "YYYY-MM".
+    Examples: "cancel all my meetings this month", "clear everything with Priya in May", "wipe May for Rahul", "all of June".
+    Phrases like "this month", "whole May", "entire month", "everything in May" → month / month_client, NOT date_client.
+
+  • If the user names BOTH a month and a single day ("Srija on the 18th" in May) → date_client with that full date (e.g. 2026-05-18), NOT month_client.
+
+  • Other bulk scopes (unchanged):
+    - "cancel all meetings with Priya" (no month, no day) → bulkScope: "client", clientName
+    - Multiple clients → clientName comma-separated: "Priya, Rahul" with bulkScope: "client" or "month_client" or "date_client" as appropriate
+    - "cancel everything upcoming" → bulkScope: "all_future"
+
+  • GOOGLE CALENDAR (events synced from Google, link icon): FreelanceOS cannot edit Google. When the user syncs, meetings removed or cancelled in Google are marked cancelled here. For native-only rows, use cancel actions. If they only have Google-linked events, tell them to change Google Calendar and sync again.
+  • MANDATORY: If action is create_appointment, create_appointments_bulk, cancel_appointment, or cancel_appointments_bulk, put "BookingCalendar" FIRST in components (that component performs the action). Never use only StatsBar/ClientTable for those actions.
 
 APPOINTMENT DETAILS ("show my meeting with Priya", "what's my call with Rahul"):
 → changeUI: true, components: ["AppointmentCard"]
@@ -194,6 +279,14 @@ REMINDERS ("remind Rahul about tomorrow", "send reminder", "nudge client about c
   - Extract clientName into appointmentData if mentioned
   - Example: "remind Rahul about tomorrow's call" → { "components": ["ReminderSender"], "appointmentData": { "clientName": "Rahul" } }
 
+  PROJECTS & TIME TRACKING ("show projects", "my tasks", "start timer", "profitability"):
+→ changeUI: true
+  • "projects", "kanban", "board" → ProjectBoard
+  • "tasks", "todo", "my tasks" → TaskBoard
+  • "timer", "track time", "start timer", "stop timer" → TimeTracker
+  • "profit", "hourly rate", "project earnings" → ProjectProfit
+  • "new project", "create project" → ProjectBoard with action context
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DATE/TIME AWARENESS (CRITICAL):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -203,6 +296,7 @@ ALWAYS use this to resolve relative dates:
   • "tomorrow" → the day after the date provided
   • "next Monday" → the next Monday after the date provided
   • "day after tomorrow" → two days after
+  • For bulk cancel: "the 18th" / "on the 18th" with a client → one calendar day only: bulkScope "date_client" and date YYYY-MM-DD (use [TODAY]'s year-month for "the 18th" unless they said another month).
 NEVER guess or hallucinate a date. ALWAYS calculate from the provided date.
 
 BUSINESS REQUESTS (anything about clients, invoices, payments, earnings):
@@ -242,16 +336,27 @@ RESPONSE FORMAT (always valid JSON):
   "changeUI": true or false,
   "components": ["StatsBar", "ClientTable"],   // only when changeUI is true
   "filters": { "city": "Mumbai" },             // only when changeUI is true, only if filtering
-  "action": "none",                            // or "create_appointment" / "cancel_appointment" / "cancel_appointments_bulk"
+  "action": "none",                            // or "create_appointment" | "create_appointments_bulk" | "cancel_appointment" | "cancel_appointments_bulk"
   "appointmentData": {
-    "clientName": "Rahul",
-    "date": "2026-05-11",
-    "time": "15:00",
-    "title": "Meeting with Rahul",
-    "bulkScope": "month",
-    "month": "2026-05"
+    "bulkScope": "date_client",
+    "date": "2026-05-18",
+    "clientName": "Srija"
   },
   "emptyMessage": "No clients in Mumbai yet"   // ALWAYS include when filters are set
+}
+
+Example bulk CREATE (different shape — use "meetings" array, not bulkScope):
+{
+  "reply": "On it!",
+  "changeUI": true,
+  "components": ["BookingCalendar"],
+  "action": "create_appointments_bulk",
+  "appointmentData": {
+    "meetings": [
+      { "clientName": "Priya", "date": "2026-05-14", "time": "10:00", "title": "Check-in" },
+      { "clientName": "Rahul", "date": "2026-05-15", "time": "14:00" }
+    ]
+  }
 }
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -318,7 +423,7 @@ export async function POST(req: Request) {
         const parsed = JSON.parse(jsonMatch[0])
 
         // Sanitise — never crash, always return something valid
-        const response = sanitise(parsed)
+        const response = reconcileBulkCancelDayVsMonth(prompt, sanitise(parsed))
 
         console.log(`[Aria] "${prompt}" → "${response.reply}" (changeUI: ${response.changeUI})`)
         return Response.json(response)
