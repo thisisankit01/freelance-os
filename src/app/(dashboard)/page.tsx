@@ -79,14 +79,12 @@ export default function Dashboard() {
             }}
           />
 
-          <div
-            className="max-w-3xl mx-auto px-4 pt-28 pb-52"
-          >
+          <div className="max-w-3xl mx-auto px-4 pt-28 pb-52">
             <div className="mb-6">
               {user && (
                 <>
                   <h1 className="text-xl font-semibold text-zinc-800 dark:text-zinc-200">
-                    {greeting}, {user?.firstName} 👋
+                    {greeting}, {user?.firstName}
                   </h1>
                   <p className="text-sm text-zinc-500 mt-0.5">
                     Ask anything or use the command bar below
