@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // src/types/index.ts
 
 export type Client = {
@@ -15,6 +16,7 @@ export type Client = {
 }
 
 export type Invoice = {
+    invoice_items: InvoiceItem[]
     id: string
     client_id: string
     invoice_number: string

@@ -25,7 +25,7 @@ const VALID_COMPONENTS = [
     'SlotPicker',
     'ReminderSender',
     'ProjectBoard',
-    'TaskBoard', 
+    'TaskBoard',
     'TimeTracker',
     'ProjectProfit'
 ] as const
@@ -42,7 +42,7 @@ export type AriaResponse = {
         search?: string
         week?: string      // 'current' for "this week" queries
     }
-    action?: string        // 'none' | 'create_appointment' | 'create_appointments_bulk' | 'cancel_appointment' | 'cancel_appointments_bulk'
+    action?: string        // 'none' | 'create_appointment' | ... | 'edit_project'
     appointmentData?: {
         clientName?: string
         /** YYYY-MM-DD — create_appointment start date, OR cancel date_client bulk target day */
@@ -56,6 +56,11 @@ export type AriaResponse = {
         month?: string
         /** JSON array of { clientName?, date, time, title?, notes? } — set by sanitise from AI "meetings" */
         meetingsJson?: string
+    }
+    projectData?: {
+        /** for edit_project: project id or title to fuzzy-match */
+        id?: string
+        title?: string
     }
     emptyMessage?: string
 }
@@ -94,6 +99,11 @@ function sanitise(raw: Record<string, unknown>): AriaResponse {
     const componentsForUi: Component[] = APPOINTMENT_UI_ACTIONS.has(actionStr)
         ? ['BookingCalendar', ...safeComponents.filter((c) => c !== 'BookingCalendar')]
         : safeComponents
+
+    // edit_project must always include ProjectBoard
+    if (actionStr === 'edit_project') {
+        if (!componentsForUi.includes('ProjectBoard')) componentsForUi.unshift('ProjectBoard')
+    }
 
     // Filters — accept any string values, they go into Supabase .ilike() which is safe
     const rawFilters = typeof raw.filters === 'object' && raw.filters !== null
@@ -146,6 +156,18 @@ function sanitise(raw: Record<string, unknown>): AriaResponse {
         }
         : undefined
 
+    // Project data for edit_project action
+    const rawProjData = raw.projectData
+    const projectData = typeof rawProjData === 'object' && rawProjData !== null
+        ? (rawProjData as Record<string, unknown>)
+        : undefined
+    const safeProject: AriaResponse['projectData'] = projectData
+        ? {
+            ...(typeof projectData.id === 'string' ? { id: projectData.id } : {}),
+            ...(typeof projectData.title === 'string' ? { title: projectData.title } : {}),
+        }
+        : undefined
+
     return {
         reply,
         changeUI: true,
@@ -153,6 +175,7 @@ function sanitise(raw: Record<string, unknown>): AriaResponse {
         filters,
         action: actionStr,
         appointmentData: safeAppt && Object.keys(safeAppt).length > 0 ? safeAppt : undefined,
+        projectData: safeProject && Object.keys(safeProject).length > 0 ? safeProject : undefined,
         emptyMessage,
     }
 }
@@ -279,15 +302,28 @@ REMINDERS ("remind Rahul about tomorrow", "send reminder", "nudge client about c
   - Extract clientName into appointmentData if mentioned
   - Example: "remind Rahul about tomorrow's call" → { "components": ["ReminderSender"], "appointmentData": { "clientName": "Rahul" } }
 
-  PROJECTS & TIME TRACKING ("show projects", "my tasks", "start timer", "profitability"):
+PROJECTS & TIME TRACKING ("show projects", "my tasks", "start timer", "profitability"):
 → changeUI: true
   • "projects", "kanban", "board" → ProjectBoard
   • "tasks", "todo", "my tasks" → TaskBoard
   • "timer", "track time", "start timer", "stop timer" → TimeTracker
   • "profit", "hourly rate", "project earnings" → ProjectProfit
-  • "new project", "create project", "add a project named …" → changeUI: true, components: ["ProjectBoard"], action: "none", filters: {}
-    NEVER set action to "create_project" or any value except the appointment actions below or "none". Projects are created by the command bar (client); you only open ProjectBoard and reply briefly (e.g. "Opening projects — type create project [name] in the bar to add one.").
-  • TASKS BY PROJECT — same meaning even if phrased differently or mistyped: "show tasks in X", "sho tasks in X", "tasks in X", "task for X", "open tasks for X", "list tasks in X" → components **["TaskBoard","ProjectBoard"]**, action "none". You cannot fuzzy-match their DB project names; tell them the command bar will suggest closest names, or to say **list projects** first.
+  • "new project", "create project", "add a project named …" → changeUI: true, components: ["ProjectBoard"], action: "none"
+    NEVER set action to "create_project". Projects are created by the command bar (client); you only open ProjectBoard.
+  • TASKS BY PROJECT — "show tasks in X", "tasks in X", etc. → components: ["TaskBoard","ProjectBoard"], action: "none"
+  
+  ═══ EDIT PROJECT (critical new feature) ═══
+  • "edit project [name]", "open [name] project settings", "modify project [name]", "change [name] project", "update project [name]" → 
+    action: "edit_project"
+    components: ["ProjectBoard"]
+    projectData: { title: "<extracted project name>" }
+    Reply: short confirmation like "Opening [name] for editing ✏️"
+  • Extract the project name as accurately as possible from the user's message.
+  • Examples:
+    - "edit project Acme Corp" → projectData: { title: "Acme Corp" }, action: "edit_project"
+    - "open Acme settings" → projectData: { title: "Acme" }, action: "edit_project"
+    - "I want to change the deadline on Acme Corp project" → projectData: { title: "Acme Corp" }, action: "edit_project"
+    - "update budget for my Acme project" → projectData: { title: "Acme" }, action: "edit_project"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DATE/TIME AWARENESS (CRITICAL):
@@ -311,8 +347,7 @@ BUSINESS REQUESTS (anything about clients, invoices, payments, earnings):
   • "show invoices" / "my bills" / "list invoices" = InvoiceList
   • "how much did I make" / "my money" / "revenue" / "income" = StatsBar
   • ANY city/location anywhere in the world = ClientTable with { "city": "<that city>" } filter
-  • ANY person name mentioned = ClientTable with { "search": "<that name>" } filter — ALWAYS put the name in search filter, never leave filters empty when a name is given
-    Example: "client named Ankit" → { "components": ["ClientTable"], "filters": { "search": "Ankit" }, "emptyMessage": "No client named Ankit found" }
+  • ANY person name mentioned = ClientTable with { "search": "<that name>" } filter
 
 EMOTIONAL / STRESSED ("I'm overwhelmed", "so many unpaid invoices", "I'm behind"):
 → changeUI: true. Empathise in reply, then show the most helpful component.
@@ -336,39 +371,12 @@ RESPONSE FORMAT (always valid JSON):
 {
   "reply": "Your conversational reply here — warm, human, under 15 words",
   "changeUI": true or false,
-  "components": ["StatsBar", "ClientTable"],   // only when changeUI is true
-  "filters": { "city": "Mumbai" },             // only when changeUI is true, only if filtering
-  "action": "none",                            // ONLY: "none" | "create_appointment" | "create_appointments_bulk" | "cancel_appointment" | "cancel_appointments_bulk" — never "create_project" or other invented values
-  "appointmentData": {
-    "bulkScope": "date_client",
-    "date": "2026-05-18",
-    "clientName": "Srija"
-  },
-  "emptyMessage": "No clients in Mumbai yet"   // ALWAYS include when filters are set
+  "components": ["ProjectBoard"],
+  "filters": {},
+  "action": "edit_project",
+  "projectData": { "title": "Acme Corp" },
+  "emptyMessage": ""
 }
-
-Example bulk CREATE (different shape — use "meetings" array, not bulkScope):
-{
-  "reply": "On it!",
-  "changeUI": true,
-  "components": ["BookingCalendar"],
-  "action": "create_appointments_bulk",
-  "appointmentData": {
-    "meetings": [
-      { "clientName": "Priya", "date": "2026-05-14", "time": "10:00", "title": "Check-in" },
-      { "clientName": "Rahul", "date": "2026-05-15", "time": "14:00" }
-    ]
-  }
-}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TONE RULES:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- Warm, helpful, occasionally use a relevant emoji (not excessive)
-- Never say "I cannot", "I don't support", "invalid request"
-- Never be robotic or formal
-- Always try. If unsure, make a smart guess and mention it.
-- Short replies — this is a command bar, not a chat essay
 
 Return ONLY valid JSON. Nothing outside the JSON object.`
 
@@ -381,7 +389,119 @@ function genericFallback(): AriaResponse {
 }
 
 export async function POST(req: Request) {
-    const { prompt, context, history = [] } = await req.json()
+    let body: Record<string, unknown> = {}
+    try {
+        body = (await req.json()) as Record<string, unknown>
+    } catch {
+        body = {}
+    }
+
+    const prompt = typeof body.prompt === 'string' ? body.prompt : ''
+    const history = Array.isArray(body.history) ? body.history : []
+    const mode = body.mode
+
+    // ─── COMMAND HINTS MODE ───────────────────────────────────────────────────
+    if (mode === 'command_hints') {
+        const sc = body.suggestionContext as
+            | { projects?: unknown; clients?: unknown; workspaceMode?: unknown }
+            | undefined
+        const projectList = Array.isArray(sc?.projects)
+            ? sc!.projects!.map(String).filter(Boolean).slice(0, 16)
+            : []
+        const clientList = Array.isArray(sc?.clients)
+            ? sc!.clients!.map(String).filter(Boolean).slice(0, 16)
+            : []
+        const workspaceMode = Boolean(sc?.workspaceMode)
+        const query = typeof body.query === 'string' ? body.query.trim() : ''
+
+        if (!process.env.OPENROUTER_API_KEY) {
+            return Response.json({ hints: [] as string[] })
+        }
+
+        try {
+            const sys = `You generate command suggestions for FreelanceOS, a freelance business dashboard.
+You know ALL features:
+• Clients: show all, filter by city/status/name, add new
+• Invoices: show list, filter paid/overdue/draft/sent, create new
+• Payments: payment status, overdue breakdown
+• Calendar: show calendar, schedule/cancel meetings (single or bulk), slot picker, send reminders
+• Projects: kanban board (not_started/in_progress/review/done/on_hold), create, edit status, view profitability
+  - "edit project [name]" opens the edit modal for that project
+• Tasks: task board, add tasks, filter by project/due date/overdue, toggle done/todo
+• Time Tracker: start/stop timer, view billable hours, time entries
+
+Return ONLY valid JSON: {"hints": string[]}
+Rules:
+- 6-8 hints max
+- Under 9 words each
+- Use actual client/project names provided — NEVER invent fake names
+- If user typed a query, prioritize hints matching that intent
+- Mix categories: scheduling, invoices, clients, tasks, projects, payments, time tracking
+- Make them specific ("Schedule call with Priya" not "Schedule a call")
+- No markdown, no extra keys, no explanations`
+
+            let userMsg: string
+            if (query) {
+                userMsg = `User is typing: "${query}"
+Available projects: ${projectList.length ? projectList.join(', ') : 'none'}.
+Available clients: ${clientList.length ? clientList.join(', ') : 'none'}.
+Generate 6-8 hints that closely match the intent of "${query}". Return ONLY JSON.`
+            } else if (workspaceMode) {
+                userMsg = `User is in the project/task workspace.
+Projects: ${projectList.length ? projectList.join(', ') : 'none yet'}.
+Clients: ${clientList.length ? clientList.join(', ') : 'none yet'}.
+Generate 6-8 workspace-specific commands. Good examples:
+- show tasks in ${projectList[0] ?? 'ProjectName'}
+- put project ${projectList[0] ?? 'ProjectName'} on hold
+- add task Write proposal to ${projectList[0] ?? 'ProjectName'}
+- edit project ${projectList[0] ?? 'ProjectName'}
+- mark project ${projectList[1] ?? 'ProjectName'} as in progress
+- start timer for ${projectList[0] ?? 'ProjectName'}
+- show project profitability
+- move ${projectList[0] ?? 'ProjectName'} to review`
+            } else {
+                userMsg = `User is on the main freelance dashboard.
+Clients: ${clientList.length ? clientList.join(', ') : 'none yet'}.
+Projects: ${projectList.length ? projectList.join(', ') : 'none yet'}.
+Generate 6-8 commands. Good examples:
+- Who hasn't paid me this month?
+- Schedule call with ${clientList[0] ?? 'ClientName'} tomorrow
+- Show overdue invoices
+- Cancel meeting with ${clientList[1] ?? 'ClientName'}
+- Create invoice for ${clientList[0] ?? 'ClientName'}
+- Send reminder to ${clientList[0] ?? 'ClientName'}
+- Show project profitability
+- Start timer`
+            }
+
+            const result = await generateText({
+                model: openrouter('google/gemini-2.0-flash-001'),
+                messages: [
+                    { role: 'system', content: sys },
+                    { role: 'user', content: userMsg },
+                ],
+                temperature: 0.45,
+                maxOutputTokens: 320,
+            })
+
+            const raw = result.text?.replace(/```json\s*/g, '').replace(/```/g, '').trim() ?? ''
+            const jsonMatch = raw.match(/\{[\s\S]*\}/)
+            if (!jsonMatch) return Response.json({ hints: [] as string[] })
+
+            const parsed = JSON.parse(jsonMatch[0]) as { hints?: unknown }
+            const hints = Array.isArray(parsed.hints)
+                ? parsed.hints
+                      .map((h) => String(h).trim())
+                      .filter((h) => h.length > 0 && h.length < 60)
+                      .slice(0, 8)
+                : []
+            return Response.json({ hints })
+        } catch {
+            return Response.json({ hints: [] as string[] })
+        }
+    }
+
+    // ─── MAIN ARIA CHAT MODE ──────────────────────────────────────────────────
 
     if (!prompt?.trim()) {
         return Response.json({
@@ -427,7 +547,7 @@ export async function POST(req: Request) {
         // Sanitise — never crash, always return something valid
         const response = reconcileBulkCancelDayVsMonth(prompt, sanitise(parsed))
 
-        console.log(`[Aria] "${prompt}" → "${response.reply}" (changeUI: ${response.changeUI})`)
+        console.log(`[Aria] "${prompt}" → "${response.reply}" (changeUI: ${response.changeUI}, action: ${response.action})`)
         return Response.json(response)
 
     } catch (err: unknown) {
@@ -455,49 +575,42 @@ export async function POST(req: Request) {
         // Help / capabilities detection
         if (/\b(help|what can|how do|capabilities|what do you do|assist)\b/.test(p)) {
             return Response.json({
-                reply: "I can manage clients, invoices, payments, and give you quick stats — just ask!",
+                reply: "I can manage clients, invoices, payments, projects, and give you quick stats — just ask!",
                 changeUI: false,
+            } satisfies AriaResponse)
+        }
+
+        // Edit project fallback
+        if (/\b(edit|modify|update|change|open)\b.*\b(project)\b/i.test(prompt)) {
+            const nameMatch = prompt.match(/(?:edit|modify|update|change|open)\s+(?:project\s+)?(.+?)(?:\s+project)?$/i)
+            const title = nameMatch?.[1]?.trim()
+            return Response.json({
+                reply: title ? `Opening ${title} for editing ✏️` : "Opening project editor",
+                changeUI: true,
+                components: ['ProjectBoard'],
+                action: 'edit_project',
+                projectData: title ? { title } : undefined,
             } satisfies AriaResponse)
         }
 
         // Business-related query — show default dashboard
         const businessPattern = /\b(client|clients|invoice|invoices|payment|payments|earn|revenue|money|due|overdue|paid|stats|city|active|inactive|bill|billing)\b/i
         if (businessPattern.test(prompt)) {
-            // Try to pick the right components based on keywords
             const components: Component[] = []
             if (/\b(invoice|invoices|bill|billing)\b/i.test(prompt)) {
-                if (/\b(create|new|make|generate)\b/i.test(prompt)) {
-                    components.push('InvoiceBuilder')
-                } else {
-                    components.push('InvoiceList')
-                }
+                if (/\b(create|new|make|generate)\b/i.test(prompt)) components.push('InvoiceBuilder')
+                else components.push('InvoiceList')
             }
-            if (/\b(client|clients)\b/i.test(prompt)) {
-                components.push('ClientTable')
-            }
-            if (/\b(payment|payments)\b/i.test(prompt)) {
-                components.push('PaymentStatus')
-            }
-            if (/\b(earn|revenue|money|stats)\b/i.test(prompt)) {
-                components.push('StatsBar')
-            }
-            // Default if nothing specific matched
-            if (components.length === 0) {
-                components.push('StatsBar', 'ClientTable')
-            }
+            if (/\b(client|clients)\b/i.test(prompt)) components.push('ClientTable')
+            if (/\b(payment|payments)\b/i.test(prompt)) components.push('PaymentStatus')
+            if (/\b(earn|revenue|money|stats)\b/i.test(prompt)) components.push('StatsBar')
+            if (components.length === 0) components.push('StatsBar', 'ClientTable')
 
-            // Try to extract filters
             const filters: AriaResponse['filters'] = {}
-            if (/\b(active)\b/i.test(prompt) && !/\b(inactive|non.?active|not.?active)\b/i.test(prompt)) {
-                filters.status = 'active'
-            } else if (/\b(inactive|non.?active|not.?active)\b/i.test(prompt)) {
-                filters.status = 'inactive'
-            }
-            if (/\b(paid)\b/i.test(prompt)) {
-                filters.status = 'paid'
-            } else if (/\b(overdue|unpaid|due|pending)\b/i.test(prompt)) {
-                filters.status = 'overdue'
-            }
+            if (/\b(active)\b/i.test(prompt) && !/\b(inactive|non.?active|not.?active)\b/i.test(prompt)) filters.status = 'active'
+            else if (/\b(inactive|non.?active|not.?active)\b/i.test(prompt)) filters.status = 'inactive'
+            if (/\b(paid)\b/i.test(prompt)) filters.status = 'paid'
+            else if (/\b(overdue|unpaid|due|pending)\b/i.test(prompt)) filters.status = 'overdue'
 
             return Response.json({
                 reply: "Let me pull that up for you! 📊",
@@ -506,6 +619,18 @@ export async function POST(req: Request) {
                 filters,
                 action: 'none',
             } satisfies AriaResponse)
+        }
+
+        const calendarPattern = /\b(meeting|meetings|appointment|appointments|calendar|schedule|book|booking|call|calls|slot|reminder|remind|cancel)\b/i;
+        if (calendarPattern.test(prompt)) {
+            const isCancel = /\b(cancel|remove|delete|clear|wipe|drop)\b/i.test(prompt);
+            const isCreate = /\b(schedule|book|set up|arrange|create|add|new)\b/i.test(prompt);
+            return Response.json({
+                reply: isCancel ? "Let me open the calendar for that." : isCreate ? "Opening the calendar to schedule that!" : "Here's your calendar 📅",
+                changeUI: true,
+                components: ['BookingCalendar'],
+                action: 'none',
+            } satisfies AriaResponse);
         }
 
         // For any other error, return a generic fallback without UI change

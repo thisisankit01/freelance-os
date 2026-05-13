@@ -1,8 +1,8 @@
 import type { ParsedPmCommand } from '@/lib/pm-command-parser'
-import { mapTaskStatus } from '@/lib/pm-command-parser'
+import { mapProjectStatus, mapTaskStatus } from '@/lib/pm-command-parser'
 import { usePmChatStore } from '@/lib/pm-chat-store'
 
-type ProjectRow = { id: string; title: string }
+type ProjectRow = { id: string; title: string; status?: string }
 type TaskRow = {
     id: string
     title: string
@@ -69,6 +69,50 @@ function fuzzyRankProjects(query: string, projects: ProjectRow[]): { p: ProjectR
             return { p, score }
         })
         .sort((a, b) => b.score - a.score)
+}
+
+const PROJECT_STATUS_LABEL: Record<string, string> = {
+    not_started: 'Not Started',
+    in_progress: 'In Progress',
+    review: 'Review',
+    done: 'Done',
+    on_hold: 'On Hold',
+}
+
+const ALLOWED_PROJECT_STATUS = new Set(['not_started', 'in_progress', 'review', 'done', 'on_hold'])
+
+function pickProjectForStatusCommand(
+    parsed: Extract<ParsedPmCommand, { kind: 'set_project_status' }>,
+    projects: ProjectRow[],
+    store: ReturnType<typeof usePmChatStore.getState>,
+):
+    | { ok: true; project: ProjectRow }
+    | { ok: false; reason: 'no_current' }
+    | { ok: false; reason: 'none' }
+    | { ok: false; reason: 'fuzzy'; candidates: ProjectRow[] }
+    | { ok: false; reason: 'ambiguous'; matches: ProjectRow[] } {
+    const ref = parsed.projectRef
+    if (ref.kind === 'id') {
+        const p = projects.find((x) => x.id === ref.id)
+        return p ? { ok: true, project: p } : { ok: false, reason: 'none' }
+    }
+    if (ref.kind === 'current') {
+        const id = store.taskBoardProjectId || store.lastMentionedProjectId
+        if (!id) return { ok: false, reason: 'no_current' }
+        const p = projects.find((x) => x.id === id)
+        return p ? { ok: true, project: p } : { ok: false, reason: 'none' }
+    }
+    const name = ref.name
+    const matches = projects.filter((p) => scoreMatch(name, p.title) > 0)
+    if (matches.length === 0) {
+        const ranked = fuzzyRankProjects(name, projects).filter((x) => x.score >= 42).slice(0, 6).map((x) => x.p)
+        if (ranked.length > 0) return { ok: false, reason: 'fuzzy', candidates: ranked }
+        return { ok: false, reason: 'none' }
+    }
+    if (matches.length > 1) {
+        return { ok: false, reason: 'ambiguous', matches: matches.slice(0, 4) }
+    }
+    return { ok: true, project: matches[0]! }
 }
 
 function pickBestProject(name: string, projects: ProjectRow[]): ProjectRow | null {
@@ -209,9 +253,10 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
     if (parsed.kind === 'help') {
         return {
             reply:
-                '**Projects:** create project [name] · list projects · rename project [old] to [new] · delete project [name]\n' +
+                '**Projects:** create project [name] · list projects · rename project [old] to [new] · delete project [name] · **put project [name] on hold** · **mark project [name] as in progress / review / done**\n' +
+                '**Current project:** after **show tasks in X** or creating a project: **make this project on hold** · **set this project to review**\n' +
                 '**Tasks:** add task … · delete task … · mark … as done · **mark all tasks as …** · **mark all tasks in [project] as …**\n' +
-                '**View:** show tasks in [project] · tasks in [project] (same) · sho/shwo typos ok · show all tasks · show completed tasks · clear filters\n' +
+                '**View:** show tasks in [project] · show all tasks · show completed tasks · clear filters\n' +
                 '**Other:** summary · current context · undo · yes/no after confirmations',
         }
     }
@@ -357,6 +402,69 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
         if (store.taskBoardProjectId === proj.id) store.setTaskView(proj.id, parsed.to)
         window.dispatchEvent(new Event('freelanceos:pm-refresh'))
         return { reply: `Renamed **${proj.title}** → **${parsed.to}**.` }
+    }
+
+    if (parsed.kind === 'set_project_status') {
+        const next =
+            ALLOWED_PROJECT_STATUS.has(parsed.status) ? parsed.status : mapProjectStatus(parsed.status)
+        if (!ALLOWED_PROJECT_STATUS.has(next)) {
+            return {
+                reply: 'Use a board column: **not started**, **in progress**, **review**, **done**, **on hold**.',
+            }
+        }
+        const projects = await apiProjects()
+        const picked = pickProjectForStatusCommand(parsed, projects, store)
+        if (picked.ok === false) {
+            if (picked.reason === 'no_current') {
+                return {
+                    reply: 'Name the project (**put project Acme on hold**) or focus one with **show tasks in [name]** / pick a board card — then **make this project on hold** works.',
+                }
+            }
+            if (picked.reason === 'ambiguous') {
+                return {
+                    reply: 'Which project?',
+                    chips: picked.matches.map((p) => ({
+                        label: p.title,
+                        payload: `__pm:projstatus:${p.id}:${next}`,
+                    })),
+                }
+            }
+            if (picked.reason === 'fuzzy') {
+                return {
+                    reply: 'Did you mean one of these?',
+                    chips: picked.candidates.map((p) => ({
+                        label: p.title,
+                        payload: `__pm:projstatus:${p.id}:${next}`,
+                    })),
+                }
+            }
+            return { reply: 'No project found. Try **list projects**.' }
+        }
+        const proj = picked.project
+        const prevRaw = proj.status && ALLOWED_PROJECT_STATUS.has(proj.status) ? proj.status : proj.status || 'not_started'
+        const prev = ALLOWED_PROJECT_STATUS.has(prevRaw) ? prevRaw : 'not_started'
+        if (prev === next) {
+            const lbl = PROJECT_STATUS_LABEL[next] ?? next
+            return { reply: `**${proj.title}** is already **${lbl}**.` }
+        }
+        const res = await fetch('/api/projects', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: proj.id, status: next }),
+        })
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) return { reply: `Could not update: ${json.error || res.statusText}` }
+        store.setLastMentionedProject(proj.id)
+        const labelDone = PROJECT_STATUS_LABEL[next] ?? next
+        store.pushUndo(`Project “${proj.title}” → ${labelDone}`, async () => {
+            await fetch('/api/projects', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: proj.id, status: prev }),
+            })
+        })
+        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+        return { reply: `**${proj.title}** is now **${labelDone}** on the board.` }
     }
 
     if (parsed.kind === 'delete_project') {

@@ -1,18 +1,25 @@
-import { auth } from '@clerk/nextjs/server'
-import { redirect } from 'next/navigation'
-import { Navbar } from '@/components/layout/Navbar'
+import { auth } from "@clerk/nextjs/server";
+import { redirect } from "next/navigation";
+import { Navbar } from "@/components/layout/Navbar";
+import { ClerkProvider } from "@clerk/nextjs";
 
-export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-    const { userId } = await auth()
+export default async function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const { userId } = await auth();
 
-    if (!userId) {
-        redirect('/login')
-    }
+  if (!userId) {
+    redirect("/login");
+  }
 
-    return (
-        <>
-            <Navbar />
-            {children}
-        </>
-    )
+  return (
+    <>
+      <ClerkProvider>
+        <Navbar />
+        {children}
+      </ClerkProvider>
+    </>
+  );
 }

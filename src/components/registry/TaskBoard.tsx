@@ -33,7 +33,6 @@ export function TaskBoard({
   const clearTaskFilters = usePmChatStore((s) => s.clearTaskFilters);
 
   const pmTaskFilterKey = `${taskBoardProjectId ?? ""}:${taskStatusFilter ?? ""}`;
-
   const effectiveProjectId = projectIdProp ?? taskBoardProjectId ?? undefined;
 
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -44,6 +43,14 @@ export function TaskBoard({
     title: "",
     estimated_hours: "",
     project_id: "",
+    due_date: "",
+  });
+
+  // Edit state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({
+    title: "",
+    estimated_hours: "",
     due_date: "",
   });
 
@@ -63,9 +70,8 @@ export function TaskBoard({
       statusFilter &&
       !statusFilter.startsWith("due:") &&
       statusFilter !== "overdue"
-    ) {
+    )
       params.set("status", statusFilter);
-    }
     const res = await fetch(`/api/tasks?${params}`);
     const json = await res.json();
     setTasks(json.data || []);
@@ -81,22 +87,18 @@ export function TaskBoard({
       cancelled = true;
     };
   }, [load, pmTaskFilterKey]);
-
   useEffect(() => {
     const onRefresh = () => load();
     window.addEventListener("freelanceos:pm-refresh", onRefresh);
     return () =>
       window.removeEventListener("freelanceos:pm-refresh", onRefresh);
   }, [load]);
-
   useEffect(() => {
-    if (user?.id && !effectiveProjectId) {
+    if (user?.id && !effectiveProjectId)
       fetch("/api/projects")
         .then((r) => r.json())
         .then((j) => setProjects(j.data || []));
-    }
   }, [user?.id, effectiveProjectId]);
-
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
@@ -182,6 +184,35 @@ export function TaskBoard({
     if (res.ok) load();
   }
 
+  async function saveEdit(id: string) {
+    const res = await fetch("/api/tasks", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id,
+        title: editForm.title.trim(),
+        estimated_hours: editForm.estimated_hours
+          ? Number(editForm.estimated_hours)
+          : null,
+        due_date: editForm.due_date || null,
+      }),
+    });
+    if (res.ok) {
+      setEditingId(null);
+      load();
+    }
+  }
+
+  function startEdit(task: Task) {
+    setEditForm({
+      title: task.title,
+      estimated_hours:
+        task.estimated_hours != null ? String(task.estimated_hours) : "",
+      due_date: task.due_date ? task.due_date.slice(0, 10) : "",
+    });
+    setEditingId(task.id);
+  }
+
   if (loading)
     return (
       <div className="bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-xl p-8 animate-pulse">
@@ -190,7 +221,7 @@ export function TaskBoard({
     );
 
   const filterPills: { label: string; onRemove: () => void }[] = [];
-  if (effectiveProjectId) {
+  if (effectiveProjectId)
     filterPills.push({
       label: `Project: ${taskBoardProjectTitle ?? "selected"}`,
       onRemove: () => {
@@ -198,8 +229,7 @@ export function TaskBoard({
         window.dispatchEvent(new Event("freelanceos:pm-refresh"));
       },
     });
-  }
-  if (taskStatusFilter) {
+  if (taskStatusFilter)
     filterPills.push({
       label: `Filter: ${taskStatusFilter}`,
       onRemove: () => {
@@ -207,7 +237,6 @@ export function TaskBoard({
         window.dispatchEvent(new Event("freelanceos:pm-refresh"));
       },
     });
-  }
 
   return (
     <motion.div
@@ -221,7 +250,7 @@ export function TaskBoard({
         <button
           type="button"
           onClick={() => setShowForm(!showForm)}
-          className="text-xs bg-violet-600 text-white px-3 py-1.5 rounded-lg"
+          className="text-xs bg-violet-600 text-white px-3 py-1.5 rounded-lg hover:bg-violet-700 transition-colors"
         >
           {showForm ? "Cancel" : "+ Add Task"}
         </button>
@@ -307,7 +336,7 @@ export function TaskBoard({
           </div>
           <button
             type="submit"
-            className="w-full text-sm bg-violet-600 text-white py-2 rounded-lg"
+            className="w-full text-sm bg-violet-600 text-white py-2 rounded-lg hover:bg-violet-700"
           >
             Add Task
           </button>
@@ -323,45 +352,95 @@ export function TaskBoard({
             <button
               type="button"
               onClick={() => toggleTask(task.id, task.status)}
-              className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
-                task.status === "done"
-                  ? "bg-emerald-500 border-emerald-500"
-                  : "border-zinc-300 dark:border-zinc-600"
-              }`}
+              className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${task.status === "done" ? "bg-emerald-500 border-emerald-500" : "border-zinc-300 dark:border-zinc-600"}`}
             >
               {task.status === "done" && (
                 <span className="text-white text-xs">✓</span>
               )}
             </button>
-            <div className="flex-1 min-w-0">
-              <p
-                className={`text-sm ${task.status === "done" ? "line-through text-zinc-400" : "text-zinc-800 dark:text-zinc-200"}`}
-              >
-                {task.title}
-              </p>
-              <div className="flex gap-2 text-[10px] text-zinc-400 flex-wrap">
-                {task.projects?.title && <span>{task.projects.title}</span>}
-                {task.estimated_hours != null && (
-                  <span>~{task.estimated_hours}h</span>
-                )}
-                {task.due_date && (
-                  <span>
-                    Due {new Date(task.due_date).toLocaleDateString("en-IN")}
-                  </span>
-                )}
+
+            {editingId === task.id ? (
+              <div className="flex-1 space-y-2">
+                <input
+                  value={editForm.title}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, title: e.target.value }))
+                  }
+                  className="w-full text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg px-2 py-1 bg-white dark:bg-zinc-950"
+                />
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    value={editForm.estimated_hours}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        estimated_hours: e.target.value,
+                      }))
+                    }
+                    className="flex-1 text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg px-2 py-1 bg-white dark:bg-zinc-950"
+                    placeholder="Est. hours"
+                  />
+                  <input
+                    type="date"
+                    value={editForm.due_date}
+                    onChange={(e) =>
+                      setEditForm((f) => ({ ...f, due_date: e.target.value }))
+                    }
+                    className="flex-1 text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg px-2 py-1 bg-white dark:bg-zinc-950"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => saveEdit(task.id)}
+                    className="text-xs bg-violet-600 text-white px-3 py-1 rounded-lg font-medium hover:bg-violet-700 transition-colors"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => setEditingId(null)}
+                    className="text-xs border border-zinc-200 dark:border-zinc-700 px-3 py-1 rounded-lg text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
-            </div>
-            <span
-              className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 ${
-                task.status === "done"
-                  ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400"
-                  : task.status === "in_progress"
-                    ? "bg-amber-50 text-amber-600 dark:bg-amber-950 dark:text-amber-400"
-                    : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
-              }`}
-            >
-              {task.status}
-            </span>
+            ) : (
+              <>
+                <div className="flex-1 min-w-0">
+                  <p
+                    className={`text-sm ${task.status === "done" ? "line-through text-zinc-400" : "text-zinc-800 dark:text-zinc-200"}`}
+                  >
+                    {task.title}
+                  </p>
+                  <div className="flex gap-2 text-[10px] text-zinc-400 flex-wrap">
+                    {task.projects?.title && <span>{task.projects.title}</span>}
+                    {task.estimated_hours != null && (
+                      <span>~{task.estimated_hours}h</span>
+                    )}
+                    {task.due_date && (
+                      <span>
+                        Due{" "}
+                        {new Date(task.due_date).toLocaleDateString("en-IN")}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => startEdit(task)}
+                    className="text-[10px] text-zinc-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors font-medium"
+                  >
+                    ✎
+                  </button>
+                  <span
+                    className={`text-[10px] px-2 py-0.5 rounded-full ${task.status === "done" ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400" : task.status === "in_progress" ? "bg-amber-50 text-amber-600 dark:bg-amber-950 dark:text-amber-400" : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"}`}
+                  >
+                    {task.status}
+                  </span>
+                </div>
+              </>
+            )}
           </div>
         ))}
         {displayedTasks.length === 0 && (

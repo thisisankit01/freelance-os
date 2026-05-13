@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { useUser } from "@clerk/nextjs";
 import { format } from "date-fns";
+import { useTimerStore } from "@/lib/timer-store";
 
 export function TimeTracker() {
   const { user } = useUser();
@@ -21,24 +22,23 @@ export function TimeTracker() {
     {
       id: string;
       started_at: string;
-      ended_at: string;
-      duration_minutes: number;
+      ended_at: string | null;
+      duration_minutes: number | null;
       tasks?: { id: string; title: string };
       billable: boolean;
     }[]
   >([]);
-  const [activeEntry, setActiveEntry] = useState<{
-    id: string;
-    started_at: string;
-    ended_at: string;
-    duration_minutes: number;
-    tasks?: { id: string; title: string };
-    billable: boolean;
-  } | null>(null);
-  const [elapsed, setElapsed] = useState(0);
   const [selectedTask, setSelectedTask] = useState("");
   const [description, setDescription] = useState("");
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const {
+    activeEntry,
+    elapsed,
+    isRunning,
+    startTimer,
+    stopTimer,
+    setActiveEntry,
+  } = useTimerStore();
 
   useEffect(() => {
     if (user?.id) {
@@ -48,21 +48,11 @@ export function TimeTracker() {
   }, [user?.id]);
 
   useEffect(() => {
-    if (activeEntry) {
-      intervalRef.current = setInterval(() => {
-        const start = new Date(activeEntry.started_at).getTime();
-        setElapsed(Math.floor((Date.now() - start) / 1000));
-      }, 1000);
-    } else {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      setTimeout(() => {
-        setElapsed(0);
-      }, 0);
-    }
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [activeEntry]);
+    const onRefresh = () => loadEntries();
+    window.addEventListener("freelanceos:time-refresh", onRefresh);
+    return () =>
+      window.removeEventListener("freelanceos:time-refresh", onRefresh);
+  }, []);
 
   async function loadTasks() {
     const res = await fetch("/api/tasks");
@@ -82,7 +72,7 @@ export function TimeTracker() {
     if (active) setActiveEntry(active);
   }
 
-  async function startTimer() {
+  async function handleStart() {
     if (!selectedTask) return;
     const res = await fetch("/api/time-entries", {
       method: "POST",
@@ -94,12 +84,15 @@ export function TimeTracker() {
       }),
     });
     if (res.ok) {
+      const data = await res.json();
       setDescription("");
+      setSelectedTask("");
+      startTimer(data.data);
       loadEntries();
     }
   }
 
-  async function stopTimer() {
+  async function handleStop() {
     if (!activeEntry) return;
     const res = await fetch("/api/time-entries", {
       method: "PATCH",
@@ -110,7 +103,7 @@ export function TimeTracker() {
       }),
     });
     if (res.ok) {
-      setActiveEntry(null);
+      stopTimer();
       loadEntries();
       loadTasks();
     }
@@ -124,55 +117,58 @@ export function TimeTracker() {
   }
 
   const todayTotal = entries
-    .filter((e: { started_at: string; duration_minutes: number }) => {
+    .filter((e) => {
       const date = new Date(e.started_at);
       return (
         date.toDateString() === new Date().toDateString() && e.duration_minutes
       );
     })
-    .reduce(
-      (sum: number, e: { duration_minutes: number }) =>
-        sum + (e.duration_minutes || 0),
-      0,
-    );
+    .reduce((sum, e) => sum + (e.duration_minutes || 0), 0);
+
+  const displayTodayTotal =
+    todayTotal + (isRunning ? Math.floor(elapsed / 60) : 0);
 
   return (
     <motion.div
       layoutId="TimeTracker"
-      className="bg-white border border-zinc-100 rounded-xl p-5"
+      className="bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-xl p-5"
     >
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-semibold text-zinc-800">Time Tracker</h2>
-        <div className="text-xs text-zinc-500">
+        <h2 className="text-lg font-semibold text-zinc-800 dark:text-zinc-200">
+          Time Tracker
+        </h2>
+        <div className="text-xs text-zinc-500 dark:text-zinc-400">
           Today:{" "}
-          <span className="font-medium text-zinc-800">
-            {Math.floor(todayTotal / 60)}h {todayTotal % 60}m
+          <span className="font-medium text-zinc-800 dark:text-zinc-200">
+            {Math.floor(displayTodayTotal / 60)}h {displayTodayTotal % 60}m
           </span>
         </div>
       </div>
 
-      {activeEntry ? (
-        <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 mb-4 text-center">
-          <p className="text-xs text-violet-600 mb-1">Tracking</p>
-          <p className="text-2xl font-mono font-bold text-violet-800">
+      {isRunning && activeEntry ? (
+        <div className="bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl p-4 mb-4 text-center">
+          <p className="text-xs text-violet-600 dark:text-violet-400 mb-1">
+            Tracking
+          </p>
+          <p className="text-2xl font-mono font-bold text-violet-800 dark:text-violet-200">
             {formatDuration(elapsed)}
           </p>
-          <p className="text-xs text-violet-500 mt-1">
+          <p className="text-xs text-violet-500 dark:text-violet-400 mt-1">
             {activeEntry.tasks?.title}
           </p>
           <button
-            onClick={stopTimer}
-            className="mt-3 bg-red-500 text-white text-sm px-4 py-2 rounded-lg hover:bg-red-600"
+            onClick={handleStop}
+            className="mt-3 bg-red-500 hover:bg-red-600 text-white text-sm px-4 py-2 rounded-lg font-medium transition-colors"
           >
             ⏹ Stop
           </button>
         </div>
       ) : (
-        <div className="flex gap-2 mb-4">
+        <div className="flex flex-col sm:flex-row gap-2 mb-4">
           <select
             value={selectedTask}
             onChange={(e) => setSelectedTask(e.target.value)}
-            className="flex-1 text-sm border rounded-lg px-3 py-2"
+            className="flex-1 text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 bg-white dark:bg-zinc-950 text-zinc-700 dark:text-zinc-300 outline-none focus:ring-2 focus:ring-violet-500/30"
           >
             <option value="">Select task...</option>
             {tasks.map((t) => (
@@ -185,12 +181,12 @@ export function TimeTracker() {
             placeholder="Note"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="flex-1 text-sm border rounded-lg px-3 py-2"
+            className="flex-1 text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 bg-white dark:bg-zinc-950 text-zinc-700 dark:text-zinc-300 placeholder:text-zinc-400 outline-none focus:ring-2 focus:ring-violet-500/30"
           />
           <button
-            onClick={startTimer}
+            onClick={handleStart}
             disabled={!selectedTask}
-            className="bg-emerald-500 text-white text-sm px-4 py-2 rounded-lg hover:bg-emerald-600 disabled:opacity-50"
+            className="bg-violet-600 hover:bg-violet-700 text-white text-sm px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             ▶ Start
           </button>
@@ -198,14 +194,18 @@ export function TimeTracker() {
       )}
 
       <div className="space-y-1">
-        <p className="text-xs font-medium text-zinc-500 mb-2">Recent entries</p>
+        <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-2">
+          Recent entries
+        </p>
         {entries.slice(0, 5).map((entry) => (
           <div
             key={entry.id}
-            className="flex justify-between items-center py-2 border-b border-zinc-50 text-sm"
+            className="flex justify-between items-center py-2 border-b border-zinc-50 dark:border-zinc-800/50 text-sm"
           >
             <div>
-              <p className="text-zinc-800">{entry.tasks?.title}</p>
+              <p className="text-zinc-800 dark:text-zinc-200">
+                {entry.tasks?.title}
+              </p>
               <p className="text-[10px] text-zinc-400">
                 {format(new Date(entry.started_at), "MMM d, h:mm a")}
                 {entry.duration_minutes &&
@@ -213,7 +213,7 @@ export function TimeTracker() {
               </p>
             </div>
             {entry.billable && (
-              <span className="text-[10px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-0.5 rounded-full font-medium">
                 Billable
               </span>
             )}

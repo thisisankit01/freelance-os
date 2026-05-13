@@ -22,6 +22,7 @@ export type ParsedPmCommand =
     | { kind: 'delete_task'; title: string }
     | { kind: 'delete_task_by_id'; taskId: string }
     | { kind: 'mark_all_tasks'; projectName?: string; status: string }
+    | { kind: 'set_project_status'; projectRef: { kind: 'named'; name: string } | { kind: 'current' } | { kind: 'id'; id: string }; status: string }
 
 function norm(s: string) {
     return s.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -32,6 +33,18 @@ export function stripPlaceholderBrackets(s: string) {
     const t = s.trim()
     if (t.startsWith('[') && t.endsWith(']')) return t.slice(1, -1).trim()
     return t
+}
+
+/** Project board column keys — must match ProjectBoard / API */
+export function mapProjectStatus(raw: string): string {
+    const s = raw.toLowerCase().trim()
+    if (s === 'hold' || s === 'on hold' || s === 'on_hold' || s === 'paused' || s === 'pause') return 'on_hold'
+    if (s === 'not started' || s === 'not_started' || s === 'backlog' || s === 'planned' || s === 'new')
+        return 'not_started'
+    if (s === 'in progress' || s === 'in_progress' || s === 'progress' || s === 'wip' || s === 'doing') return 'in_progress'
+    if (s === 'review' || s === 'in review' || s === 'qa') return 'review'
+    if (s === 'done' || s === 'completed' || s === 'complete' || s === 'shipped') return 'done'
+    return s.replace(/\s+/g, '_')
 }
 
 /** Map natural language status to DB task.status */
@@ -50,6 +63,15 @@ export function parsePmCommand(input: string): ParsedPmCommand | null {
     if (!t) return null
 
     // Chip payloads (internal)
+    if (raw.startsWith('__pm:projstatus:')) {
+        const rest = raw.slice('__pm:projstatus:'.length)
+        const lastColon = rest.lastIndexOf(':')
+        if (lastColon <= 0) return null
+        const projectId = rest.slice(0, lastColon)
+        const st = rest.slice(lastColon + 1).trim()
+        if (!projectId || !st) return null
+        return { kind: 'set_project_status', projectRef: { kind: 'id', id: projectId }, status: st }
+    }
     if (raw.startsWith('__pm:mark:')) {
         const rest = raw.slice('__pm:mark:'.length)
         const lastColon = rest.lastIndexOf(':')
@@ -93,6 +115,43 @@ export function parsePmCommand(input: string): ParsedPmCommand | null {
 
     m = t.match(/^(?:delete|remove)\s+project\s+(.+)$/)
     if (m) return { kind: 'delete_project', name: stripPlaceholderBrackets(m[1]!) }
+
+    // Project status — "make this project on hold", "put project Acme in review"
+    if (/^(?:make|put)\s+this\s+project\s+(?:on\s+)?hold\b/.test(t)) {
+        return { kind: 'set_project_status', projectRef: { kind: 'current' }, status: mapProjectStatus('on_hold') }
+    }
+    m = t.match(/^(?:make|put|set|move)\s+this\s+project\s+(?:to|as)\s+(.+)$/)
+    if (m) {
+        return {
+            kind: 'set_project_status',
+            projectRef: { kind: 'current' },
+            status: mapProjectStatus(stripPlaceholderBrackets(m[1]!)),
+        }
+    }
+    m = t.match(/^(?:mark|set)\s+project\s+(.+?)\s+as\s+(.+)$/)
+    if (m) {
+        return {
+            kind: 'set_project_status',
+            projectRef: { kind: 'named', name: stripPlaceholderBrackets(m[1]!) },
+            status: mapProjectStatus(stripPlaceholderBrackets(m[2]!)),
+        }
+    }
+    m = t.match(/^(?:set|move|put)\s+project\s+(.+?)\s+to\s+(.+)$/)
+    if (m) {
+        return {
+            kind: 'set_project_status',
+            projectRef: { kind: 'named', name: stripPlaceholderBrackets(m[1]!) },
+            status: mapProjectStatus(stripPlaceholderBrackets(m[2]!)),
+        }
+    }
+    m = t.match(/^(?:make|put)\s+project\s+(.+?)\s+(?:on\s+)?hold\b/)
+    if (m) {
+        return {
+            kind: 'set_project_status',
+            projectRef: { kind: 'named', name: stripPlaceholderBrackets(m[1]!) },
+            status: 'on_hold',
+        }
+    }
 
     // ── Task view: "show all tasks in X" (tolerate sho/shwo/view typos) ──
     m = t.match(/^(?:show|sho|shwo|view)\s+all\s+tasks?\s+(?:in|for)\s+(.+)$/)

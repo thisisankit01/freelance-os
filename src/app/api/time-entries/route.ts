@@ -41,10 +41,22 @@ export async function PATCH(req: Request) {
   if (!userId) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { id, ...updates } = await req.json()
-  if (updates.ended_at && updates.started_at) {
-    const start = new Date(updates.started_at)
-    const end = new Date(updates.ended_at)
-    updates.duration_minutes = Math.round((end.getTime() - start.getTime()) / 60000)
+
+  // If stopping timer, calculate duration from existing started_at
+  if (updates.ended_at && !updates.duration_minutes) {
+    // Fetch existing record to get started_at
+    const { data: existing } = await supabaseAdmin
+      .from('time_entries')
+      .select('started_at')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single()
+    
+    if (existing?.started_at) {
+      const start = new Date(existing.started_at)
+      const end = new Date(updates.ended_at)
+      updates.duration_minutes = Math.round((end.getTime() - start.getTime()) / 60000)
+    }
   }
 
   const { data, error } = await supabaseAdmin

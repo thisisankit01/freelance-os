@@ -118,7 +118,11 @@ export const usePmChatStore = create<PmChatStore>((set, get) => ({
     },
 
     setTaskView: (projectId, projectTitle) =>
-        set({ taskBoardProjectId: projectId, taskBoardProjectTitle: projectTitle }),
+        set({
+            taskBoardProjectId: projectId,
+            taskBoardProjectTitle: projectTitle,
+            ...(projectId ? { lastMentionedProjectId: projectId } : {}),
+        }),
 
     setTaskStatusFilter: (status) => set({ taskStatusFilter: status }),
 
