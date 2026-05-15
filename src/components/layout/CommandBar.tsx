@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 // src/components/layout/CommandBar.tsx
 
@@ -623,6 +624,9 @@ export function CommandBar({
           target.closest("[data-soloos-command-input]")
         )
           return;
+        // Immediately guard against ghost-clicks that can hit suggestions
+        // during the same pointer interaction that opens the dock.
+        setIgnoreClicksUntil(Date.now() + 200);
         setDockOpen(true);
         inputRef.current?.focus();
       }}
