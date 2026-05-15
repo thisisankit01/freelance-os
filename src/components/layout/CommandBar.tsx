@@ -77,6 +77,8 @@ export function CommandBar({
   );
   const [isListening, setIsListening] = useState(false);
   const [dockOpen, setDockOpen] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const [ignoreClicksUntil, setIgnoreClicksUntil] = useState(0);
 
   // Entity data for AI hints + live search
   const [entityRows, setEntityRows] = useState<{
@@ -89,6 +91,18 @@ export function CommandBar({
   const dockRef = useRef<HTMLDivElement>(null);
   const hydratedRef = useRef(false);
   const suggestionsVersionRef = useRef(0);
+
+  // Voice refs
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const maxStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speakingRef = useRef(false);
+  const isListeningRef = useRef(false);
+  const chunksRef = useRef<Blob[]>([]);
+  const handleSubmitRef = useRef<(prompt: string) => Promise<void>>(
+    async () => {},
+  );
 
   const {
     setComponents,
@@ -144,6 +158,18 @@ export function CommandBar({
       cancelled = true;
     };
   }, [dockOpen, workspaceMode, refreshHints]);
+
+  // Reset selection when suggestions change or dock closes
+  useEffect(() => {
+    setSelectedIndex(-1);
+  }, [input, dockOpen, instantSuggestions.length]);
+
+  // Guard against ghost-clicks for 200ms after dock opens
+  useEffect(() => {
+    if (dockOpen) {
+      setIgnoreClicksUntil(Date.now() + 200);
+    }
+  }, [dockOpen]);
 
   // ─── SUBMIT ───────────────────────────────────────────────────────────────
 
@@ -356,58 +382,111 @@ export function CommandBar({
     [loading, workspaceMode, filters, user],
   );
 
-  // Press "/" anywhere to focus
+  useEffect(() => {
+    handleSubmitRef.current = handleSubmit;
+  }, [handleSubmit]);
+
+  // Press "/" or Ctrl/Cmd+K anywhere to focus
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const isCommandK =
+        (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k";
+      const isSlash = e.key === "/" && !e.ctrlKey && !e.metaKey;
+
       if (
-        e.key === "/" &&
-        !e.ctrlKey &&
-        !e.metaKey &&
+        (isCommandK || isSlash) &&
         document.activeElement?.tagName !== "INPUT" &&
         document.activeElement?.tagName !== "TEXTAREA"
       ) {
-        const target = document.querySelector<HTMLInputElement>(
-          "[data-freelanceos-command-input]",
-        );
-        if (target) {
-          e.preventDefault();
-          target.focus();
-          setDockOpen(true);
-        }
+        e.preventDefault();
+        inputRef.current?.focus();
+        setDockOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Scroll selected suggestion into view
+  useEffect(() => {
+    if (selectedIndex >= 0) {
+      const el = document.getElementById(`cmd-suggestion-${selectedIndex}`);
+      el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [selectedIndex]);
+
   // ─── VOICE ────────────────────────────────────────────────────────────────
 
-  async function startVoice() {
-    if (isListening) {
-      if (recRef.current) {
-        try {
-          recRef.current.stop();
-        } catch {
-          /* noop */
-        }
+  const stopRecording = useCallback(() => {
+    if (recRef.current && recRef.current.state !== "inactive") {
+      try {
+        recRef.current.stop();
+      } catch {
+        /* noop */
       }
-      setIsListening(false);
-      setAiMessage("");
+    }
+    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+      try {
+        audioContextRef.current.close();
+      } catch {
+        /* noop */
+      }
+    }
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    if (maxStartTimerRef.current) {
+      clearTimeout(maxStartTimerRef.current);
+      maxStartTimerRef.current = null;
+    }
+    recRef.current = null;
+    audioContextRef.current = null;
+    analyserRef.current = null;
+    speakingRef.current = false;
+    isListeningRef.current = false;
+    chunksRef.current = [];
+    setIsListening(false);
+  }, []);
+
+  async function startVoice() {
+    if (isListeningRef.current) {
+      stopRecording();
       return;
     }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+
       const recorder = new MediaRecorder(stream);
-      const chunks: Blob[] = [];
+      chunksRef.current = [];
 
       recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
+        if (e.data.size > 0) chunksRef.current.push(e.data);
       };
 
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        if (chunks.length === 0) return;
+        try {
+          audioContext.close();
+        } catch {
+          /* noop */
+        }
+
+        const chunks = chunksRef.current;
+        chunksRef.current = [];
+
+        const totalSize = chunks.reduce((sum, c) => sum + c.size, 0);
+        if (totalSize < 200) {
+          setAiMessage("Didn't hear anything");
+          setTimeout(() => setAiMessage(""), 2000);
+          return;
+        }
 
         const blob = new Blob(chunks, { type: "audio/webm" });
         const form = new FormData();
@@ -422,7 +501,7 @@ export function CommandBar({
           const { text } = await res.json();
           if (text?.trim()) {
             setInput(text);
-            handleSubmit(text);
+            handleSubmitRef.current(text);
           } else {
             setAiMessage("Could not hear you");
             setTimeout(() => setAiMessage(""), 2000);
@@ -433,8 +512,65 @@ export function CommandBar({
         }
       };
 
-      recorder.start();
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      const monitor = () => {
+        if (!isListeningRef.current) return;
+
+        analyser.getByteFrequencyData(dataArray);
+        const volume = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+        const currentlySpeaking = volume > 15;
+
+        if (currentlySpeaking && !speakingRef.current) {
+          speakingRef.current = true;
+          setAiMessage("Hearing you…");
+          if (maxStartTimerRef.current) {
+            clearTimeout(maxStartTimerRef.current);
+            maxStartTimerRef.current = null;
+          }
+        }
+
+        if (speakingRef.current) {
+          if (currentlySpeaking) {
+            if (silenceTimerRef.current) {
+              clearTimeout(silenceTimerRef.current);
+              silenceTimerRef.current = null;
+            }
+          } else if (!silenceTimerRef.current) {
+            silenceTimerRef.current = setTimeout(() => {
+              if (recRef.current && recRef.current.state !== "inactive") {
+                recRef.current.stop();
+              }
+              isListeningRef.current = false;
+              setIsListening(false);
+            }, 2000);
+          }
+        }
+
+        if (isListeningRef.current) {
+          requestAnimationFrame(monitor);
+        }
+      };
+
+      recorder.start(1000);
+      requestAnimationFrame(monitor);
+
+      maxStartTimerRef.current = setTimeout(() => {
+        if (!speakingRef.current) {
+          if (recRef.current && recRef.current.state !== "inactive") {
+            recRef.current.stop();
+          }
+          isListeningRef.current = false;
+          setIsListening(false);
+          setAiMessage("Didn't hear anything");
+          setTimeout(() => setAiMessage(""), 2000);
+        }
+      }, 5000);
+
+      audioContextRef.current = audioContext;
+      analyserRef.current = analyser;
       recRef.current = recorder;
+      isListeningRef.current = true;
       setIsListening(true);
       setAiMessage("Listening…");
     } catch {
@@ -478,7 +614,18 @@ export function CommandBar({
       initial={{ y: 20, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-2xl shadow-lg shadow-zinc-200/50 dark:shadow-zinc-900/50 p-2 flex items-center gap-2"
-      onPointerDown={() => setDockOpen(true)}
+      onPointerDown={(e) => {
+        // Clicking padding / empty space focuses the input
+        const target = e.target as HTMLElement;
+        if (
+          target.closest("button") ||
+          target.closest("input") ||
+          target.closest("[data-freelanceos-command-input]")
+        )
+          return;
+        setDockOpen(true);
+        inputRef.current?.focus();
+      }}
     >
       {/* Aria icon / spinner */}
       <div className="w-7 h-7 rounded-xl bg-violet-600 flex items-center justify-center flex-shrink-0">
@@ -488,15 +635,15 @@ export function CommandBar({
           <svg
             width="14"
             height="14"
-            viewBox="0 0 14 14"
+            viewBox="0 0 24 24"
             fill="none"
-            aria-hidden="true"
+            xmlns="http://www.w3.org/2000/svg"
           >
-            <circle cx="7" cy="7" r="2.5" fill="white" />
+            <circle cx="12" cy="12" r="3" fill="white" />
             <path
-              d="M7 2v1.5M7 10.5V12M2 7h1.5M10.5 7H12"
+              d="M12 2V6M12 18V22M2 12H6M18 12H22M5.05 5.05L7.88 7.88M16.12 16.12L18.95 18.95M5.05 18.95L7.88 16.12M16.12 7.88L18.95 5.05"
               stroke="white"
-              strokeWidth="1.5"
+              strokeWidth="2"
               strokeLinecap="round"
             />
           </svg>
@@ -512,10 +659,38 @@ export function CommandBar({
         onChange={(e) => setInput(e.target.value)}
         onFocus={() => setDockOpen(true)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") handleSubmit(input);
-          if (e.key === "Escape") {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            if (!dockOpen) setDockOpen(true);
+            setSelectedIndex((prev) => {
+              const next = prev + 1;
+              return next >= instantSuggestions.length ? 0 : next;
+            });
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setSelectedIndex((prev) => {
+              const next = prev - 1;
+              return next < 0 ? instantSuggestions.length - 1 : next;
+            });
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            if (selectedIndex >= 0 && instantSuggestions[selectedIndex]) {
+              const s = instantSuggestions[selectedIndex];
+              if (s.requiresInput) {
+                setInput(s.label);
+                inputRef.current?.focus();
+                setSelectedIndex(-1);
+              } else {
+                handleSubmit(s.label);
+              }
+            } else {
+              handleSubmit(input);
+            }
+          } else if (e.key === "Escape") {
             setInput("");
             setDockOpen(false);
+            setSelectedIndex(-1);
+            inputRef.current?.blur();
           }
         }}
         placeholder={
@@ -586,7 +761,7 @@ export function CommandBar({
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 4 }}
-      transition={{ duration: 0.2 }}
+      transition={{ duration: 0.2, ease: "easeOut" }}
       className="mt-2.5 h-[16rem] rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-1 py-1 shadow-sm overflow-hidden flex flex-col"
     >
       {/* Header */}
@@ -613,21 +788,28 @@ export function CommandBar({
                 <span>No matches — try a different keyword</span>
               </CommandEmpty>
             ) : (
-              instantSuggestions.map((s) => (
+              instantSuggestions.map((s, index) => (
                 <CommandItem
                   key={s.id}
+                  id={`cmd-suggestion-${index}`}
                   value={s.id}
-                  onMouseDown={(e) => e.preventDefault()}
+                  onPointerDown={(e) => e.preventDefault()}
+                  onMouseEnter={() => setSelectedIndex(index)}
                   onSelect={() => {
-                    // If requires input, fill input instead of submitting
+                    if (Date.now() < ignoreClicksUntil) return;
                     if (s.requiresInput) {
                       setInput(s.label);
                       inputRef.current?.focus();
+                      setSelectedIndex(-1);
                     } else {
                       handleSubmit(s.label);
                     }
                   }}
-                  className="text-[11px] w-full max-w-none rounded-lg border-0 bg-transparent px-2 py-2.5 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50/70 dark:hover:bg-zinc-800/40 transition-colors cursor-pointer"
+                  className={`text-[11px] w-full max-w-none rounded-lg border-0 bg-transparent px-2 py-2.5 text-zinc-700 dark:text-zinc-200 transition-colors cursor-pointer ${
+                    selectedIndex === index
+                      ? "bg-zinc-100 dark:bg-zinc-800/80"
+                      : "hover:bg-zinc-50/70 dark:hover:bg-zinc-800/40"
+                  }`}
                 >
                   {renderSuggestion(s)}
                 </CommandItem>

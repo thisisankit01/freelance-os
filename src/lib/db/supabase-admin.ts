@@ -1,0 +1,7 @@
+import { createClient } from '@supabase/supabase-js'
+
+// This will only work on the server
+export const supabaseAdmin = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+)

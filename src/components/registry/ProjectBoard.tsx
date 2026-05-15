@@ -91,6 +91,7 @@ export function ProjectBoard() {
     if (editProjectId && editProjectId !== prevEditId.current) {
       const project = projects.find((p) => p.id === editProjectId);
       if (project) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setEditForm({
           title: project.title,
           description: project.description || "",
