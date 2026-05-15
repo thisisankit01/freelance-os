@@ -200,7 +200,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
             if (!res.ok) return { reply: `Could not delete: ${json.error || res.statusText}` }
             if (store.taskBoardProjectId === p.projectId) store.clearTaskFilters()
             if (store.lastMentionedProjectId === p.projectId) store.setLastMentionedProject(null)
-            window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+            window.dispatchEvent(new Event('soloos:pm-refresh'))
             return { reply: `Deleted project **${p.title}**.` }
         }
         if (p.kind === 'delete_task') {
@@ -211,7 +211,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
             })
             const json = await res.json().catch(() => ({}))
             if (!res.ok) return { reply: `Could not delete task: ${json.error || res.statusText}` }
-            window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+            window.dispatchEvent(new Event('soloos:pm-refresh'))
             return { reply: `Deleted task **${p.title}**.` }
         }
         if (p.kind === 'batch_mark_tasks') {
@@ -237,7 +237,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
                     })
                 }
             })
-            window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+            window.dispatchEvent(new Event('soloos:pm-refresh'))
             return { reply: `Updated **${items.length}** task(s) to **${nextStatus}**.` }
         }
         return { reply: 'Done.' }
@@ -246,7 +246,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
     if (parsed.kind === 'undo') {
         const u = await store.popUndo()
         if (!u) return { reply: 'Nothing to undo.' }
-        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
         return { reply: u.ok ? `Undid: ${u.label}` : 'Undo failed.' }
     }
 
@@ -263,7 +263,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
 
     if (parsed.kind === 'clear_filters') {
         store.clearTaskFilters()
-        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
         return { reply: 'Filters cleared. Showing all tasks.' }
     }
 
@@ -297,7 +297,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
     if (parsed.kind === 'show_tasks') {
         if (parsed.all) {
             store.clearTaskFilters()
-            window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+            window.dispatchEvent(new Event('soloos:pm-refresh'))
             return { reply: 'Showing **all** tasks (no project filter).' }
         }
         if (!parsed.projectName) return { reply: 'Say which project: **show tasks in [name]**.' }
@@ -342,7 +342,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
         const p = matches[0]!
         store.setTaskView(p.id, p.title)
         store.setTaskStatusFilter(null)
-        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
         return { reply: `Filtering tasks to **${p.title}**.` }
     }
 
@@ -350,16 +350,16 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
         const raw = parsed.status
         if (raw.startsWith('due:')) {
             store.setTaskStatusFilter(raw)
-            window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+            window.dispatchEvent(new Event('soloos:pm-refresh'))
             return { reply: `Filter: **${raw.replace('due:', 'due ')}** (applied in task list).` }
         }
         if (raw === 'overdue') {
             store.setTaskStatusFilter('overdue')
-            window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+            window.dispatchEvent(new Event('soloos:pm-refresh'))
             return { reply: 'Showing **overdue** tasks (by due date).' }
         }
         store.setTaskStatusFilter(raw)
-        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
         return { reply: `Filter: tasks with status **${raw}**.` }
     }
 
@@ -381,7 +381,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
                 body: JSON.stringify({ id: created.id }),
             })
         })
-        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
         return {
             reply: `Created project **${created.title}**.`,
             chips: [{ label: 'View tasks in this project', payload: `show tasks in ${created.title}` }],
@@ -400,7 +400,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
         const json = await res.json().catch(() => ({}))
         if (!res.ok) return { reply: `Rename failed: ${json.error || res.statusText}` }
         if (store.taskBoardProjectId === proj.id) store.setTaskView(proj.id, parsed.to)
-        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
         return { reply: `Renamed **${proj.title}** → **${parsed.to}**.` }
     }
 
@@ -463,7 +463,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
                 body: JSON.stringify({ id: proj.id, status: prev }),
             })
         })
-        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
         return { reply: `**${proj.title}** is now **${labelDone}** on the board.` }
     }
 
@@ -532,7 +532,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
                 body: JSON.stringify({ id: task.id }),
             })
         })
-        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
         return { reply: `Added **${task.title}** to **${projectTitle || 'project'}**.` }
     }
 
@@ -589,7 +589,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
                 body: JSON.stringify({ id: task.id, status: prev }),
             })
         })
-        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
         return { reply: `Updated **${task.title}** → **${next}**.` }
     }
 
@@ -680,7 +680,7 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
                 body: JSON.stringify({ id: task.id, status: prev }),
             })
         })
-        window.dispatchEvent(new Event('freelanceos:pm-refresh'))
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
         return { reply: `Updated **${task.title}** → **${next}**.` }
     }
 

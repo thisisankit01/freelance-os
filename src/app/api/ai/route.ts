@@ -219,7 +219,7 @@ function reconcileBulkCancelDayVsMonth(userPrompt: string, response: AriaRespons
     }
 }
 
-const SYSTEM_PROMPT = `You are Aria — a warm, clever AI assistant built into FreelanceOS, a tool that helps freelancers manage clients, invoices, and payments.
+const SYSTEM_PROMPT = `You are Aria — a warm, clever AI assistant built into SoloOS, a tool that helps freelancers manage clients, invoices, and payments.
 
 YOU RESPOND TO EVERYTHING. No request is ignored. You are never rude, never cold, never robotic.
 
@@ -284,7 +284,7 @@ CALENDAR / APPOINTMENTS ("show calendar", "schedule meeting", "what meetings thi
     - Multiple clients → clientName comma-separated: "Priya, Rahul" with bulkScope: "client" or "month_client" or "date_client" as appropriate
     - "cancel everything upcoming" → bulkScope: "all_future"
 
-  • GOOGLE CALENDAR (events synced from Google, link icon): FreelanceOS cannot edit Google. When the user syncs, meetings removed or cancelled in Google are marked cancelled here. For native-only rows, use cancel actions. If they only have Google-linked events, tell them to change Google Calendar and sync again.
+  • GOOGLE CALENDAR (events synced from Google, link icon):  cannot edit Google. When the user syncs, meetings removed or cancelled in Google are marked cancelled here. For native-only rows, use cancel actions. If they only have Google-linked events, tell them to change Google Calendar and sync again.
   • MANDATORY: If action is create_appointment, create_appointments_bulk, cancel_appointment, or cancel_appointments_bulk, put "BookingCalendar" FIRST in components (that component performs the action). Never use only StatsBar/ClientTable for those actions.
 
 APPOINTMENT DETAILS ("show my meeting with Priya", "what's my call with Rahul"):
@@ -419,7 +419,7 @@ export async function POST(req: Request) {
         }
 
         try {
-            const sys = `You generate command suggestions for FreelanceOS, a freelance business dashboard.
+            const sys = `You generate command suggestions for SoloOS, a freelance business dashboard.
 You know ALL features:
 • Clients: show all, filter by city/status/name, add new
 • Invoices: show list, filter paid/overdue/draft/sent, create new

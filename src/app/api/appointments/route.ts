@@ -65,16 +65,16 @@ function generateICS(opts: {
     const lines = [
         'BEGIN:VCALENDAR',
         'VERSION:2.0',
-        'PRODID:-//FreelanceOS//Appointments//EN',
+        'PRODID:-//SoloOS//Appointments//EN',
         'CALSCALE:GREGORIAN',
         'METHOD:REQUEST',
         'BEGIN:VEVENT',
-        `UID:${opts.id}@freelanceos`,
+        `UID:${opts.id}@soloos`,
         `DTSTART:${toICSDate(opts.start)}`,
         `DTEND:${toICSDate(opts.end)}`,
         `SUMMARY:${opts.title}`,
-        `DESCRIPTION:${opts.description || 'Scheduled via FreelanceOS'}`,
-        `ORGANIZER;CN=FreelanceOS:mailto:${opts.organizerEmail}`,
+        `DESCRIPTION:${opts.description || 'Scheduled via SoloOS'}`,
+        `ORGANIZER;CN=SoloOS:mailto:${opts.organizerEmail}`,
         opts.attendeeEmail ? `ATTENDEE;RSVP=TRUE;CN=${opts.attendeeEmail}:mailto:${opts.attendeeEmail}` : '',
         `STATUS:CONFIRMED`,
         `DTSTAMP:${toICSDate(new Date())}`,
@@ -330,7 +330,7 @@ export async function POST(req: Request) {
         const target = nativeUpcoming[0]
         if (!target) {
             return Response.json({
-                error: `No cancellable FreelanceOS meeting with ${clientName} (check it is scheduled, not only in Google Calendar, and linked to the client or named in the title).`,
+                error: `No cancellable SoloOS meeting with ${clientName} (check it is scheduled, not only in Google Calendar, and linked to the client or named in the title).`,
             }, { status: 404 })
         }
 
@@ -503,7 +503,7 @@ async function sendCalendarInvite(
         title,
         start,
         end,
-        description: notes || `Scheduled via FreelanceOS`,
+        description: notes || `Scheduled via SoloOS`,
         organizerEmail: fromEmail,
         attendeeEmail: client.email,
     })
@@ -511,7 +511,7 @@ async function sendCalendarInvite(
     const icsBuffer = Buffer.from(icsContent, 'utf-8')
 
     await resend.emails.send({
-        from: `FreelanceOS <${fromEmail}>`,
+        from: `SoloOS <${fromEmail}>`,
         to: [client.email],
         subject: `📅 Meeting Invite: ${title}`,
         html: `
@@ -531,7 +531,7 @@ async function sendCalendarInvite(
                 </table>
                 <p style="font-size: 13px; color: #666;">Open the attached <strong>.ics</strong> file to add this to your calendar.</p>
                 <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-                <p style="color: #999; font-size: 12px;">Sent via FreelanceOS</p>
+                <p style="color: #999; font-size: 12px;">Sent via SoloOS</p>
             </div>
         `,
         attachments: [

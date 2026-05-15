@@ -49,9 +49,8 @@ export function TimeTracker() {
 
   useEffect(() => {
     const onRefresh = () => loadEntries();
-    window.addEventListener("freelanceos:time-refresh", onRefresh);
-    return () =>
-      window.removeEventListener("freelanceos:time-refresh", onRefresh);
+    window.addEventListener("soloos:time-refresh", onRefresh);
+    return () => window.removeEventListener("soloos:time-refresh", onRefresh);
   }, []);
 
   async function loadTasks() {

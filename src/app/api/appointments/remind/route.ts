@@ -28,7 +28,7 @@ export async function POST(req: Request) {
 
     try {
         await resend.emails.send({
-            from: 'FreelanceOS <onboarding@resend.dev>',
+            from: 'SoloOS <onboarding@resend.dev>',
             to: [appt.clients.email],
             subject: `⏰ Reminder: ${appt.title} — ${dateStr}`,
             html: `
@@ -42,7 +42,7 @@ export async function POST(req: Request) {
                         ${appt.notes ? `<p style="margin: 8px 0 4px; color: #888; font-size: 13px;">📝 ${appt.notes}</p>` : ''}
                     </div>
                     <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-                    <p style="color: #999; font-size: 12px;">Sent via FreelanceOS</p>
+                    <p style="color: #999; font-size: 12px;">Sent via SoloOS</p>
                 </div>
             `,
         })

@@ -124,9 +124,9 @@ export function ProjectBoard() {
         if (match) openEditModal(match.id);
       }
     };
-    window.addEventListener("freelanceos:edit-project", onEditProject);
+    window.addEventListener("soloos:edit-project", onEditProject);
     return () =>
-      window.removeEventListener("freelanceos:edit-project", onEditProject);
+      window.removeEventListener("soloos:edit-project", onEditProject);
   }, [projects]);
 
   useEffect(() => {
@@ -140,9 +140,8 @@ export function ProjectBoard() {
     const onRefresh = () => {
       if (user?.id) load();
     };
-    window.addEventListener("freelanceos:pm-refresh", onRefresh);
-    return () =>
-      window.removeEventListener("freelanceos:pm-refresh", onRefresh);
+    window.addEventListener("soloos:pm-refresh", onRefresh);
+    return () => window.removeEventListener("soloos:pm-refresh", onRefresh);
   }, [user?.id]);
 
   async function load() {
@@ -243,7 +242,7 @@ export function ProjectBoard() {
   }
 
   function onProjectDragStart(e: DragEvent, projectId: string) {
-    e.dataTransfer.setData("text/freelanceos-project-id", projectId);
+    e.dataTransfer.setData("text/soloos-project-id", projectId);
     e.dataTransfer.effectAllowed = "move";
     setDraggingId(projectId);
   }
@@ -261,7 +260,7 @@ export function ProjectBoard() {
 
   async function onColumnDrop(e: DragEvent, statusKey: string) {
     e.preventDefault();
-    const id = e.dataTransfer.getData("text/freelanceos-project-id");
+    const id = e.dataTransfer.getData("text/soloos-project-id");
     setDraggingId(null);
     setDragOverStatus(null);
     if (!id) return;

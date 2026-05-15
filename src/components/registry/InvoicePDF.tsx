@@ -329,7 +329,7 @@ export function InvoicePDF({
           <View style={s.headerRow}>
             {/* Left: branding */}
             <View>
-              <Text style={s.wordmark}>FreelanceOS</Text>
+              <Text style={s.wordmark}>SoloOS</Text>
               <Text style={s.wordmarkSub}>PROFESSIONAL INVOICE</Text>
             </View>
             {/* Right: INVOICE + number */}
@@ -461,7 +461,7 @@ export function InvoicePDF({
             Thank you for your business. Payment within the due date is
             appreciated.
           </Text>
-          <Text style={s.footerBrand}>FreelanceOS</Text>
+          <Text style={s.footerBrand}>SoloOS</Text>
         </View>
       </Page>
     </Document>

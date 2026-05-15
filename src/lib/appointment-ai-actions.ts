@@ -135,12 +135,12 @@ export async function runAppointmentAiAction(params: {
             return {
                 ok: false,
                 message:
-                    'No FreelanceOS-native meetings matched (past, wrong client, or only Google-linked events). Sync calendar to refresh Google copies.',
+                    'No SoloOS-native meetings matched (past, wrong client, or only Google-linked events). Sync calendar to refresh Google copies.',
             }
         }
         return {
             ok: true,
-            message: `Cancelled ${json.cancelledCount} FreelanceOS meeting(s).`,
+            message: `Cancelled ${json.cancelledCount} SoloOS meeting(s).`,
         }
     }
 

@@ -41,7 +41,7 @@ export function Navbar() {
     });
     if (res.ok) {
       stopTimer();
-      window.dispatchEvent(new Event("freelanceos:time-refresh"));
+      window.dispatchEvent(new Event("soloos:time-refresh"));
     }
   }
 
@@ -76,7 +76,7 @@ export function Navbar() {
             className="text-sm font-semibold cursor-pointer transition-colors text-zinc-800 dark:text-zinc-200 tracking-tight"
             onClick={() => window.location.reload()}
           >
-            FreelanceOS
+            SoloOS
           </span>
         </div>
 

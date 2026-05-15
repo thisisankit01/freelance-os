@@ -89,9 +89,8 @@ export function TaskBoard({
   }, [load, pmTaskFilterKey]);
   useEffect(() => {
     const onRefresh = () => load();
-    window.addEventListener("freelanceos:pm-refresh", onRefresh);
-    return () =>
-      window.removeEventListener("freelanceos:pm-refresh", onRefresh);
+    window.addEventListener("soloos:pm-refresh", onRefresh);
+    return () => window.removeEventListener("soloos:pm-refresh", onRefresh);
   }, [load]);
   useEffect(() => {
     if (user?.id && !effectiveProjectId)
@@ -226,7 +225,7 @@ export function TaskBoard({
       label: `Project: ${taskBoardProjectTitle ?? "selected"}`,
       onRemove: () => {
         usePmChatStore.getState().setTaskView(null, null);
-        window.dispatchEvent(new Event("freelanceos:pm-refresh"));
+        window.dispatchEvent(new Event("soloos:pm-refresh"));
       },
     });
   if (taskStatusFilter)
@@ -234,7 +233,7 @@ export function TaskBoard({
       label: `Filter: ${taskStatusFilter}`,
       onRemove: () => {
         usePmChatStore.getState().setTaskStatusFilter(null);
-        window.dispatchEvent(new Event("freelanceos:pm-refresh"));
+        window.dispatchEvent(new Event("soloos:pm-refresh"));
       },
     });
 
@@ -278,7 +277,7 @@ export function TaskBoard({
             type="button"
             onClick={() => {
               clearTaskFilters();
-              window.dispatchEvent(new Event("freelanceos:pm-refresh"));
+              window.dispatchEvent(new Event("soloos:pm-refresh"));
             }}
             className="text-[11px] text-zinc-500 underline"
           >

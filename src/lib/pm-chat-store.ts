@@ -31,7 +31,7 @@ type PendingConfirm =
 
 type UndoFn = () => Promise<void>
 
-const LS_KEY = 'freelanceos:pm-chat:v1'
+const LS_KEY = 'soloos:pm-chat:v1'
 const MAX_MESSAGES = 100
 
 function loadMessages(): PmChatMessage[] {

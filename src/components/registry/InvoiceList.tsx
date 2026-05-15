@@ -86,7 +86,7 @@ export function InvoiceList() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           to: invoice.clients.email,
-          subject: `Invoice ${invoice.invoice_number} from FreelanceOS`,
+          subject: `Invoice ${invoice.invoice_number} from SoloOS`,
           invoiceId: invoice.id,
           invoiceNumber: invoice.invoice_number,
           pdfBase64: base64, // send the pre-rendered PDF

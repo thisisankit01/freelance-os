@@ -214,7 +214,7 @@ export function CommandBar({
                 payload: c.payload,
               })),
             );
-            window.dispatchEvent(new Event("freelanceos:pm-refresh"));
+            window.dispatchEvent(new Event("soloos:pm-refresh"));
             const plain = result.reply
               .replace(/\*\*(.+?)\*\*/g, "$1")
               .replace(/\n/g, " · ");
@@ -286,7 +286,7 @@ export function CommandBar({
                   payload: c.payload,
                 })),
               );
-              window.dispatchEvent(new Event("freelanceos:pm-refresh"));
+              window.dispatchEvent(new Event("soloos:pm-refresh"));
               pmRecoveredReply = result.reply
                 .replace(/\*\*(.+?)\*\*/g, "$1")
                 .replace(/\n/g, " · ")
@@ -342,7 +342,7 @@ export function CommandBar({
             data: (data.appointmentData ?? {}) as Record<string, unknown>,
           });
           if (exec?.ok && typeof window !== "undefined") {
-            window.dispatchEvent(new CustomEvent("freelanceos:appointments"));
+            window.dispatchEvent(new CustomEvent("soloos:appointments"));
           }
         } else if (
           data.action !== "create_project" &&
@@ -620,7 +620,7 @@ export function CommandBar({
         if (
           target.closest("button") ||
           target.closest("input") ||
-          target.closest("[data-freelanceos-command-input]")
+          target.closest("[data-soloos-command-input]")
         )
           return;
         setDockOpen(true);
@@ -653,7 +653,7 @@ export function CommandBar({
       {/* Text input */}
       <input
         ref={inputRef}
-        data-freelanceos-command-input
+        data-soloos-command-input
         aria-label="Command input"
         value={input}
         onChange={(e) => setInput(e.target.value)}

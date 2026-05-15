@@ -57,7 +57,7 @@ export function ConnectGoogleCalendar({ context = "default" }: Props) {
         setSyncMsg("No matching events found");
       }
       setComponents(["BookingCalendar"]);
-      window.dispatchEvent(new Event("freelanceos:appointments"));
+      window.dispatchEvent(new Event("soloos:appointments"));
     } finally {
       setSyncing(false);
       setTimeout(() => setSyncMsg(null), 4000);
