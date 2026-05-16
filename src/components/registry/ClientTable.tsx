@@ -1,5 +1,6 @@
 'use client'
 
+import { useUser } from '@clerk/nextjs'
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -56,6 +57,7 @@ function initials(name: string) {
 }
 
 export function ClientTable() {
+    const { user } = useUser()
     const [clients, setClients] = useState<Client[]>([])
     const [loading, setLoading] = useState(true)
     const [importOpen, setImportOpen] = useState(false)
@@ -70,6 +72,8 @@ export function ClientTable() {
     const [mounted, setMounted] = useState(false)
     const [googleContacts, setGoogleContacts] = useState<ClientDraft[]>([])
     const [googleQuery, setGoogleQuery] = useState('')
+    const [googlePermission, setGooglePermission] = useState<'unknown' | 'granted' | 'missing'>('unknown')
+    const [requestingGooglePermission, setRequestingGooglePermission] = useState(false)
     const { filters, emptyMessage, selectClient, setComponents } = useStore()
 
     const load = useCallback(async () => {
@@ -148,15 +152,36 @@ export function ClientTable() {
         const res = await fetch('/api/google/contacts')
         const json = await res.json().catch(() => ({}))
         if (!res.ok) {
+            if (json.needsPermission) setGooglePermission('missing')
             setMessage(json.error || 'Could not load Google Contacts.')
             setSaving(false)
             return
         }
         const rows = Array.isArray(json.data) ? json.data.map(toDraft) : []
         setGoogleContacts(rows)
+        setGooglePermission('granted')
         setDrafts([])
         setMessage(rows.length ? 'Search your Google Contacts and add only the clients you want.' : 'No Google contacts found.')
         setSaving(false)
+    }
+
+    async function requestGoogleContactsPermission() {
+        if (!user) {
+            setMessage('Sign in with Google first, then SoloOS can ask for Contacts permission.')
+            return
+        }
+        setRequestingGooglePermission(true)
+        try {
+            await user.createExternalAccount({
+                strategy: 'oauth_google',
+                redirectUrl: window.location.href,
+                additionalScopes: ['https://www.googleapis.com/auth/contacts.readonly'],
+                oidcPrompt: 'consent',
+            })
+        } catch {
+            setMessage('Could not open Google permission flow. Check Google OAuth settings, then try again.')
+            setRequestingGooglePermission(false)
+        }
     }
 
     function addGoogleContact(contact: ClientDraft) {
@@ -258,6 +283,7 @@ export function ClientTable() {
                 .some((value) => value.toLowerCase().includes(q))
         })
         .slice(0, 12)
+    const showGooglePermissionAsk = googlePermission === 'missing'
 
     return (
         <motion.div
@@ -460,41 +486,64 @@ export function ClientTable() {
                                 )}
                                 {mode === 'google' && (
                                     <div className="mb-4 space-y-3">
-                                        <div>
-                                            <input
-                                                value={googleQuery}
-                                                onChange={(e) => setGoogleQuery(e.target.value)}
-                                                placeholder="Search Google Contacts by name, email, company, phone..."
-                                                className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-500/20 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
-                                            />
-                                            <p className="mt-1 text-xs text-zinc-400">
-                                                We only add contacts you choose here. Your Google Contacts are not edited.
-                                            </p>
-                                        </div>
-                                        {saving && <p className="text-xs text-zinc-400">Loading contacts...</p>}
-                                        {!saving && googleQuery.trim() && googleMatches.length === 0 && (
-                                            <p className="rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-700 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-300">
-                                                No matching Google Contacts.
-                                            </p>
-                                        )}
-                                        <div className="space-y-2">
-                                            {googleMatches.map((contact, index) => (
-                                                <div key={`${contact.email || 'no-email'}-${contact.phone || 'no-phone'}-${contact.name || 'no-name'}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-zinc-100 p-3 dark:border-zinc-800">
-                                                    <div className="min-w-0">
-                                                        <p className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-200">{contact.name || contact.email}</p>
-                                                        <p className="truncate text-xs text-zinc-500">
-                                                            {[contact.company, contact.email, contact.phone].filter(Boolean).join(' · ')}
+                                        {showGooglePermissionAsk ? (
+                                            <div className="rounded-xl border border-violet-100 bg-violet-50/70 p-4 dark:border-violet-900 dark:bg-violet-950/25">
+                                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                                    <div>
+                                                        <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">Allow Google Contacts search</p>
+                                                        <p className="mt-1 text-xs leading-5 text-zinc-500">
+                                                            SoloOS only reads contacts so you can search and add selected clients. It will not edit your Google Contacts.
                                                         </p>
                                                     </div>
                                                     <button
-                                                        onClick={() => addGoogleContact(contact)}
-                                                        className="shrink-0 text-xs px-3 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700"
+                                                        onClick={requestGoogleContactsPermission}
+                                                        disabled={requestingGooglePermission}
+                                                        className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs text-white transition-colors hover:bg-violet-700 disabled:opacity-50"
                                                     >
-                                                        Add
+                                                        <Upload className="h-3.5 w-3.5" />
+                                                        {requestingGooglePermission ? 'Opening...' : 'Allow Contacts'}
                                                     </button>
                                                 </div>
-                                            ))}
-                                        </div>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div>
+                                                    <input
+                                                        value={googleQuery}
+                                                        onChange={(e) => setGoogleQuery(e.target.value)}
+                                                        placeholder="Search Google Contacts by name, email, company, phone..."
+                                                        className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-500/20 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+                                                    />
+                                                    <p className="mt-1 text-xs text-zinc-400">
+                                                        We only add contacts you choose here. Your Google Contacts are not edited.
+                                                    </p>
+                                                </div>
+                                                {saving && <p className="text-xs text-zinc-400">Loading contacts...</p>}
+                                                {!saving && googleQuery.trim() && googleMatches.length === 0 && (
+                                                    <p className="rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-700 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-300">
+                                                        No matching Google Contacts.
+                                                    </p>
+                                                )}
+                                                <div className="space-y-2">
+                                                    {googleMatches.map((contact, index) => (
+                                                        <div key={`${contact.email || 'no-email'}-${contact.phone || 'no-phone'}-${contact.name || 'no-name'}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-zinc-100 p-3 dark:border-zinc-800">
+                                                            <div className="min-w-0">
+                                                                <p className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-200">{contact.name || contact.email}</p>
+                                                                <p className="truncate text-xs text-zinc-500">
+                                                                    {[contact.company, contact.email, contact.phone].filter(Boolean).join(' · ')}
+                                                                </p>
+                                                            </div>
+                                                            <button
+                                                                onClick={() => addGoogleContact(contact)}
+                                                                className="shrink-0 text-xs px-3 py-1.5 rounded-lg bg-violet-600 text-white hover:bg-violet-700"
+                                                            >
+                                                                Add
+                                                            </button>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </>
+                                        )}
                                     </div>
                                 )}
                                 <div className="space-y-2">

@@ -12,7 +12,13 @@ export async function GET() {
   const { data: tokens } = await client.users.getUserOauthAccessToken(userId, 'oauth_google')
   const accessToken = tokens?.[0]?.token
   if (!accessToken) {
-    return Response.json({ error: 'Google is not connected.' }, { status: 400 })
+    return Response.json(
+      {
+        error: 'Google Contacts permission is needed before SoloOS can search your contacts.',
+        needsPermission: true,
+      },
+      { status: 400 },
+    )
   }
 
   const res = await fetch(
@@ -27,6 +33,7 @@ export async function GET() {
         error:
           'Could not read Google Contacts. Reconnect Google with Contacts permission, or paste/export contacts into AI import.',
         details,
+        needsPermission: true,
       },
       { status: 400 },
     )

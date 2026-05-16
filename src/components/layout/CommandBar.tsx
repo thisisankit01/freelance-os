@@ -40,6 +40,28 @@ interface CommandBarProps {
 
 type WorkspaceChip = { label: string; payload: string };
 
+const GENERAL_IDLE_PROMPTS = [
+  "how is my business performing",
+  "import Google contacts",
+  "draft contract for Rahul project Website Redesign",
+  "show revenue vs expenses",
+  "where am i losing money",
+  "create payment link for invoice INV-001",
+  "show low stock",
+  "add expense software 999",
+  "remind Rahul about tomorrow call",
+];
+
+const WORKSPACE_IDLE_PROMPTS = [
+  "show my projects",
+  "what projects are behind schedule",
+  "move Website Redesign to review",
+  "add task homepage to Website Redesign",
+  "start timer for homepage",
+  "show project profitability",
+  "which project has best hourly rate",
+];
+
 function pmCommandSoloLayout(
   kind: ParsedPmCommand["kind"],
 ):
@@ -211,6 +233,8 @@ export function CommandBar({
   const [dockOpen, setDockOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [ignoreClicksUntil, setIgnoreClicksUntil] = useState(0);
+  const [idlePromptIndex, setIdlePromptIndex] = useState(0);
+  const [idlePromptText, setIdlePromptText] = useState("");
 
   const [entityRows, setEntityRows] = useState<{
     projects: { id: string; title: string }[];
@@ -249,6 +273,17 @@ export function CommandBar({
   // ─── NEW: Instant suggestions hook ───────────────────────────────────────────
   const { suggestions: instantSuggestions, refreshHints } =
     useCommandSuggestions(input, entityRows);
+
+  const idlePrompts = useMemo(() => {
+    const base = workspaceMode ? WORKSPACE_IDLE_PROMPTS : GENERAL_IDLE_PROMPTS;
+    const live = instantSuggestions
+      .filter((suggestion) => !suggestion.requiresInput)
+      .map((suggestion) => suggestion.label);
+    return Array.from(new Set([...base, ...live])).slice(0, 16);
+  }, [instantSuggestions, workspaceMode]);
+
+  const activeIdlePrompt =
+    idlePrompts[idlePromptIndex % Math.max(idlePrompts.length, 1)] || "";
 
   // Deferred hydration
   useEffect(() => {
@@ -313,6 +348,41 @@ export function CommandBar({
       setIgnoreClicksUntil(Date.now() + 200);
     }
   }, [dockOpen]);
+
+  useEffect(() => {
+    if (input || loading || isListening || !activeIdlePrompt) {
+      setIdlePromptText("");
+      return;
+    }
+
+    let cancelled = false;
+    let charIndex = 1;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const typeNext = () => {
+      if (cancelled) return;
+      charIndex += 1;
+      setIdlePromptText(activeIdlePrompt.slice(0, charIndex));
+
+      if (charIndex < activeIdlePrompt.length) {
+        timeoutId = setTimeout(typeNext, 34);
+      } else {
+        timeoutId = setTimeout(() => {
+          if (!cancelled) {
+            setIdlePromptIndex((index) => index + 1);
+          }
+        }, 1800);
+      }
+    };
+
+    setIdlePromptText(activeIdlePrompt.slice(0, charIndex));
+    timeoutId = setTimeout(typeNext, 34);
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [activeIdlePrompt, input, isListening, loading]);
 
   // ─── SUBMIT ───────────────────────────────────────────────────────────────
 
@@ -981,30 +1051,12 @@ export function CommandBar({
     }
   }
 
-  // ─── NEW: Suggestion renderer with icons & categories ───────────────────────
+  // ─── Suggestion renderer ────────────────────────────────────────────────────
 
   function renderSuggestion(s: ScoredSuggestion) {
-    const icons: Record<string, string> = {
-      client: "👥",
-      invoice: "🧾",
-      calendar: "📅",
-      project: "📊",
-      task: "✅",
-      payment: "💸",
-      time: "⏱️",
-      general: "⚡",
-    };
-    const icon = s.icon || icons[s.category] || "›";
-
     return (
-      <div className="flex items-center gap-2 w-full">
-        <span className="text-xs opacity-60 w-4 text-center">{icon}</span>
+      <div className="flex w-full items-center gap-2">
         <span className="flex-1 truncate">{s.label}</span>
-        {s.source === "ai" && (
-          <span className="text-[9px] px-1 py-0.5 rounded bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 font-medium">
-            AI
-          </span>
-        )}
       </div>
     );
   }
@@ -1089,8 +1141,12 @@ export function CommandBar({
                 handleSubmit(s.label);
               }
             } else {
-              handleSubmit(input);
+              handleSubmit(input || activeIdlePrompt);
             }
+          } else if (e.key === "Tab" && !input && activeIdlePrompt) {
+            e.preventDefault();
+            setInput(activeIdlePrompt);
+            setDockOpen(true);
           } else if (e.key === "Escape") {
             setInput("");
             setDockOpen(false);
@@ -1099,9 +1155,11 @@ export function CommandBar({
           }
         }}
         placeholder={
-          workspaceMode
+          idlePromptText ||
+          activeIdlePrompt ||
+          (workspaceMode
             ? "Projects & tasks — list projects · show tasks in … · put project X on hold"
-            : "Ask anything… calendar · invoices · clients · type / to focus"
+            : "Ask anything… calendar · invoices · clients · type / to focus")
         }
         disabled={loading}
         className="flex-1 text-sm bg-transparent outline-none text-zinc-700 dark:text-zinc-300 placeholder:text-zinc-400 disabled:opacity-50"
@@ -1141,16 +1199,17 @@ export function CommandBar({
 
       {/* Submit button */}
       <AnimatePresence>
-        {input.trim() && !loading && (
+        {(input.trim() || activeIdlePrompt) && !loading && (
           <motion.button
             initial={{ opacity: 0, scale: 0.8, width: 0 }}
             animate={{ opacity: 1, scale: 1, width: "auto" }}
             exit={{ opacity: 0, scale: 0.8, width: 0 }}
             type="button"
-            onClick={() => handleSubmit(input)}
+            onClick={() => handleSubmit(input || activeIdlePrompt)}
+            title={!input.trim() ? `Run: ${activeIdlePrompt}` : "Run command"}
             className="text-xs bg-violet-600 hover:bg-violet-700 text-white px-3 py-1.5 rounded-xl transition-colors overflow-hidden whitespace-nowrap"
           >
-            Go ↗
+            {input.trim() ? "Go ↗" : "↗"}
           </motion.button>
         )}
       </AnimatePresence>
@@ -1174,13 +1233,6 @@ export function CommandBar({
         <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
           {input.trim() ? `Matches for "${input}"` : "Quick commands"}
         </p>
-        <div className="flex items-center gap-1.5">
-          {instantSuggestions.some((s) => s.source === "ai") && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400 font-medium">
-              ✨ AI hints
-            </span>
-          )}
-        </div>
       </div>
 
       {/* Scrollable list */}
@@ -1189,7 +1241,6 @@ export function CommandBar({
           <CommandList className="max-h-none px-0">
             {instantSuggestions.length === 0 ? (
               <CommandEmpty className="text-[11px] text-zinc-400 px-2 pt-3 flex flex-col items-center gap-2">
-                <span className="text-lg">🔍</span>
                 <span>No matches — try a different keyword</span>
               </CommandEmpty>
             ) : (

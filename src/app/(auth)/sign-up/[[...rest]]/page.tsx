@@ -1,15 +1,15 @@
-import { SignIn } from "@clerk/nextjs";
+import { SignUp } from "@clerk/nextjs";
 import { AuthShell, authClerkAppearance } from "@/components/auth/AuthShell";
 
-export default function LoginPage() {
+export default function SignUpPage() {
   return (
-    <AuthShell mode="login">
-      <SignIn
+    <AuthShell mode="sign-up">
+      <SignUp
         appearance={authClerkAppearance}
         forceRedirectUrl="/"
-        path="/login"
+        path="/sign-up"
         routing="path"
-        signUpUrl="/sign-up"
+        signInUrl="/login"
       />
     </AuthShell>
   );
