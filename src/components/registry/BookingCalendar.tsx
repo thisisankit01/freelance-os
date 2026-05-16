@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable react-hooks/set-state-in-effect */
+
 import { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/lib/supabase";
@@ -431,7 +433,7 @@ export function BookingCalendar() {
                   </p>
                   {selected.notes && (
                     <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-1 italic">
-                      "{selected.notes}"
+                      &quot;{selected.notes}&quot;
                     </p>
                   )}
                   {selected.source === "google_calendar" && (

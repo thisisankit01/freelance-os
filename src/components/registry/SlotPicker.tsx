@@ -52,7 +52,7 @@ export function SlotPicker() {
         const e = new Date(activeDay); e.setHours(23, 59, 59, 999)
         fetch(`/api/appointments?startDate=${s.toISOString()}&endDate=${e.toISOString()}`)
             .then(r => r.json())
-            .then(j => setBooked((j.data || []).map((a: any) => format(new Date(a.start_time), 'HH:mm'))))
+                .then(j => setBooked(((j.data || []) as { start_time: string }[]).map((a) => format(new Date(a.start_time), 'HH:mm'))))
     }, [user?.id, dayIdx])
 
     async function book(slot: Date) {

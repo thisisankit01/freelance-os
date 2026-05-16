@@ -141,3 +141,43 @@
     @apply font-sans;
   }
 }
+
+.prose-preview h1 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #18181b;
+}
+
+.prose-preview h2 {
+  margin: 0.9rem 0 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #27272a;
+}
+
+.prose-preview h3 {
+  margin: 0.75rem 0 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #3f3f46;
+}
+
+.prose-preview p {
+  margin: 0 0 0.65rem;
+}
+
+.prose-preview ul {
+  margin: 0 0 0.65rem 1rem;
+  list-style: disc;
+}
+
+.prose-preview li {
+  margin: 0.15rem 0;
+}
+
+.dark .prose-preview h1,
+.dark .prose-preview h2,
+.dark .prose-preview h3 {
+  color: #f4f4f5;
+}

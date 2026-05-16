@@ -1,15 +1,57 @@
 import type { ParsedPmCommand } from '@/lib/pm-command-parser'
 import { mapProjectStatus, mapTaskStatus } from '@/lib/pm-command-parser'
 import { usePmChatStore } from '@/lib/pm-chat-store'
+import { useStore } from '@/lib/store'
+import { createInvoiceViaAi, emailInvoiceViaAi } from '@/lib/invoice-ai-actions'
+import { supabase } from '@/lib/supabase'
 
-type ProjectRow = { id: string; title: string; status?: string }
+type ProjectRow = {
+    id: string
+    title: string
+    description?: string | null
+    status?: string
+    deadline?: string | null
+    budget?: number | null
+    client_id?: string | null
+    clients?: { id: string; name: string } | null
+    tasks?: { id: string; status: string; actual_hours?: number | null }[]
+}
 type TaskRow = {
     id: string
     title: string
     status: string
     project_id: string
+    estimated_hours?: number | null
     due_date?: string | null
     projects?: { id: string; title: string }
+}
+type InvoiceRow = {
+    id: string
+    invoice_number: string
+    status: string
+    total?: number | null
+    clients?: { id?: string; name?: string | null; email?: string | null } | null
+}
+type AppointmentRow = {
+    id: string
+    title: string
+    start_time: string
+    status?: string
+    clients?: { id?: string; name?: string | null; email?: string | null } | null
+}
+type AiDocumentRow = {
+    id: string
+    title: string
+    document_type: 'contract' | 'legal_notice'
+    status: string
+    recipient_email?: string | null
+    clients?: { id?: string; name?: string | null; email?: string | null } | null
+    projects?: { id?: string; title?: string | null } | null
+}
+type InvoiceTemplateRow = {
+    id: string
+    name: string
+    is_default?: boolean | null
 }
 
 function scoreMatch(query: string, title: string) {
@@ -178,6 +220,141 @@ async function findTaskById(id: string): Promise<TaskRow | null> {
     return tasks.find((t) => t.id === id) ?? null
 }
 
+async function resolveClientId(name: string): Promise<string | null> {
+    const q = name.trim()
+    if (!q) return null
+    const { data } = await supabase.from('clients').select('id, name').ilike('name', `%${q}%`).limit(1)
+    return data?.[0]?.id ?? null
+}
+
+async function resolveClient(name: string): Promise<{ id: string; name: string; email?: string | null } | null> {
+    const q = name.trim()
+    if (!q) return null
+    const { data } = await supabase.from('clients').select('id, name, email').ilike('name', `%${q}%`).limit(1)
+    return (data?.[0] as { id: string; name: string; email?: string | null } | undefined) ?? null
+}
+
+function documentTitle(type: 'contract' | 'legal_notice', clientName?: string, projectTitle?: string) {
+    if (type === 'legal_notice') return `Legal notice${clientName ? ` for ${clientName}` : ''}`
+    return `Contract${clientName ? ` for ${clientName}` : ''}${projectTitle ? ` - ${projectTitle}` : ''}`
+}
+
+async function findInvoice(params: { invoiceNumber?: string; clientName?: string }): Promise<InvoiceRow | null> {
+    let query = supabase
+        .from('invoices')
+        .select('id, invoice_number, status, total, clients(id, name, email)')
+        .order('created_at', { ascending: false })
+        .limit(1)
+
+    if (params.invoiceNumber) {
+        query = query.ilike('invoice_number', params.invoiceNumber)
+    } else if (params.clientName) {
+        const clientId = await resolveClientId(params.clientName)
+        if (!clientId) return null
+        query = query.eq('client_id', clientId)
+    } else {
+        return null
+    }
+
+    const { data } = await query
+    return (data?.[0] as InvoiceRow | undefined) ?? null
+}
+
+async function findNextAppointment(clientName?: string): Promise<AppointmentRow | null> {
+    const res = await fetch('/api/appointments')
+    const json = await res.json().catch(() => ({}))
+    const rows = Array.isArray(json.data) ? (json.data as AppointmentRow[]) : []
+    const now = Date.now()
+    const q = clientName?.trim().toLowerCase()
+    const upcoming = rows
+        .filter((a) => (a.status ?? 'scheduled') === 'scheduled')
+        .filter((a) => new Date(a.start_time).getTime() >= now - 5 * 60 * 1000)
+        .filter((a) => {
+            if (!q) return true
+            return (
+                a.clients?.name?.toLowerCase().includes(q) ||
+                a.title.toLowerCase().includes(q)
+            )
+        })
+        .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())
+    return upcoming[0] ?? null
+}
+
+async function apiJson(path: string, init?: RequestInit) {
+    const res = await fetch(path, {
+        ...init,
+        headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(json.error || res.statusText)
+    return json
+}
+
+async function findTeamMember(name: string): Promise<{ id: string; name: string } | null> {
+    const json = await apiJson('/api/team-members')
+    const rows = Array.isArray(json.data) ? (json.data as { id: string; name: string }[]) : []
+    return rows.find((m) => scoreMatch(name, m.name) > 0) ?? null
+}
+
+async function findInventoryItem(name: string): Promise<{ id: string; item_name: string } | null> {
+    const json = await apiJson('/api/inventory')
+    const rows = Array.isArray(json.data) ? (json.data as { id: string; item_name: string }[]) : []
+    return rows.find((m) => scoreMatch(name, m.item_name) > 0) ?? null
+}
+
+async function findInvoiceTemplate(name: string): Promise<InvoiceTemplateRow | null> {
+    const json = await apiJson('/api/invoice-templates')
+    const rows = Array.isArray(json.data) ? (json.data as InvoiceTemplateRow[]) : []
+    return rows.find((t) => scoreMatch(name, t.name) > 0) ?? null
+}
+
+async function setDefaultInvoiceTemplate(templateId: string) {
+    const json = await apiJson('/api/invoice-templates')
+    const rows = Array.isArray(json.data) ? (json.data as InvoiceTemplateRow[]) : []
+    for (const row of rows) {
+        await apiJson('/api/invoice-templates', {
+            method: 'PATCH',
+            body: JSON.stringify({ id: row.id, is_default: row.id === templateId }),
+        })
+    }
+}
+
+async function findDocument(params: {
+    title?: string
+    clientName?: string
+    documentType?: 'contract' | 'legal_notice'
+}): Promise<AiDocumentRow | null | 'ambiguous'> {
+    const url = params.documentType ? `/api/ai-documents?type=${params.documentType}` : '/api/ai-documents'
+    const json = await apiJson(url)
+    let rows = (Array.isArray(json.data) ? json.data : []) as AiDocumentRow[]
+    if (params.documentType) rows = rows.filter((d) => d.document_type === params.documentType)
+    if (params.title) rows = rows.filter((d) => scoreMatch(params.title!, d.title) > 0)
+    if (params.clientName) {
+        const q = params.clientName.toLowerCase()
+        rows = rows.filter((d) => d.clients?.name?.toLowerCase().includes(q) || d.recipient_email?.toLowerCase().includes(q))
+    }
+    if (rows.length > 1 && !params.title) return 'ambiguous'
+    return rows[0] ?? null
+}
+
+async function resolveProjectForDocument(params: {
+    projectName?: string
+    clientId?: string | null
+}): Promise<
+    | { ok: true; project: ProjectRow }
+    | { ok: false; reason: 'missing_project' | 'project_not_found' | 'project_has_no_client' | 'client_mismatch'; project?: ProjectRow }
+> {
+    if (!params.projectName) return { ok: false, reason: 'missing_project' }
+    const projects = await apiProjects()
+    const project = pickBestProject(params.projectName, projects)
+    if (!project) return { ok: false, reason: 'project_not_found' }
+    if (!project.client_id) return { ok: false, reason: 'project_has_no_client', project }
+    if (params.clientId && project.client_id !== params.clientId) {
+        return { ok: false, reason: 'client_mismatch', project }
+    }
+    return { ok: true, project }
+}
+
 export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResult> {
     const store = usePmChatStore.getState()
 
@@ -240,6 +417,60 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
             window.dispatchEvent(new Event('soloos:pm-refresh'))
             return { reply: `Updated **${items.length}** task(s) to **${nextStatus}**.` }
         }
+        if (p.kind === 'email_invoice') {
+            const ui = useStore.getState()
+            ui.clearFilters()
+            window.dispatchEvent(new Event('soloos:pm-refresh'))
+            const result = await emailInvoiceViaAi({
+                invoiceNumber: p.invoiceNumber,
+                clientName: p.clientName,
+                freelancerName: 'SoloOS',
+                freelancerEmail: 'billing@soloos.app',
+            })
+            if (!result.ok) return { reply: `Could not email invoice: ${result.message}` }
+            return { reply: result.message }
+        }
+        if (p.kind === 'send_reminder') {
+            const res = await fetch('/api/appointments/remind', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ appointmentId: p.appointmentId }),
+            })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) return { reply: `Could not send reminder: ${json.error || res.statusText}` }
+            return { reply: `Sent reminder for **${p.title}**${p.clientName ? ` to **${p.clientName}**` : ''}.` }
+        }
+        if (p.kind === 'mark_invoice_status') {
+            const { data: before } = await supabase
+                .from('invoices')
+                .select('status')
+                .eq('id', p.invoiceId)
+                .maybeSingle()
+            const res = await supabase
+                .from('invoices')
+                .update({ status: p.status })
+                .eq('id', p.invoiceId)
+                .select('id')
+                .single()
+            if (res.error) return { reply: `Could not update invoice: ${res.error.message}` }
+            if (before?.status) {
+                store.pushUndo(`Invoice ${p.invoiceNumber} → ${p.status}`, async () => {
+                    await supabase.from('invoices').update({ status: before.status }).eq('id', p.invoiceId)
+                })
+            }
+            window.dispatchEvent(new Event('soloos:pm-refresh'))
+            return { reply: `Marked invoice **${p.invoiceNumber}** as **${p.status}**.` }
+        }
+        if (p.kind === 'send_document') {
+            const json = await apiJson('/api/ai-documents/send', {
+                method: 'POST',
+                body: JSON.stringify({ id: p.documentId }),
+            })
+            window.dispatchEvent(new Event('soloos:documents-refresh'))
+            return {
+                reply: `Sent **${p.title}** to **${json.data.recipient_email || p.recipientEmail}**.`,
+            }
+        }
         return { reply: 'Done.' }
     }
 
@@ -254,8 +485,13 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
         return {
             reply:
                 '**Projects:** create project [name] · list projects · rename project [old] to [new] · delete project [name] · **put project [name] on hold** · **mark project [name] as in progress / review / done**\n' +
+                '**Project edits:** edit project [name] · set [project] budget to 50000 · set [project] deadline to 2026-06-30 · show project profitability\n' +
                 '**Current project:** after **show tasks in X** or creating a project: **make this project on hold** · **set this project to review**\n' +
-                '**Tasks:** add task … · delete task … · mark … as done · **mark all tasks as …** · **mark all tasks in [project] as …**\n' +
+                '**Tasks:** add task … · update task [name] due to 2026-06-30 · delete task … · mark … as done · **mark all tasks as …**\n' +
+                '**Clients:** show clients · show client [name] · active clients · clients in [city]\n' +
+                '**Invoices:** show invoices · show invoice [number] · create invoice for [client] [amount] · email invoice [number] · mark invoice [number] paid\n' +
+                '**Templates/Documents:** create invoice template [name] · set template [name] message to ... · draft contract for [client] · send contract to [client]\n' +
+                '**Reminders:** remind [client] about the next call\n' +
                 '**View:** show tasks in [project] · show all tasks · show completed tasks · clear filters\n' +
                 '**Other:** summary · current context · undo · yes/no after confirmations',
         }
@@ -292,6 +528,211 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
         if (projects.length === 0) return { reply: 'No projects yet. Say **create project [name]**.' }
         const lines = projects.map((p) => `• **${p.title}**`).join('\n')
         return { reply: `Projects:\n${lines}` }
+    }
+
+    if (parsed.kind === 'list_inventory') {
+        const json = await apiJson('/api/inventory')
+        const rows = (Array.isArray(json.data) ? json.data : []) as Array<{ item_name: string; quantity: number; low_stock_threshold: number }>
+        const filtered = parsed.lowStock ? rows.filter((i) => i.quantity <= i.low_stock_threshold) : rows
+        return {
+            reply: filtered.length
+                ? `${parsed.lowStock ? 'Low stock' : 'Inventory'}:\n${filtered.slice(0, 8).map((i) => `• **${i.item_name}**: ${i.quantity}`).join('\n')}`
+                : parsed.lowStock ? 'No low-stock items.' : 'No inventory yet.',
+        }
+    }
+
+    if (parsed.kind === 'add_inventory') {
+        const json = await apiJson('/api/inventory', {
+            method: 'POST',
+            body: JSON.stringify({
+                item_name: parsed.itemName,
+                quantity: parsed.quantity ?? 0,
+                unit_cost: parsed.unitCost ?? null,
+                category: parsed.category ?? null,
+                low_stock_threshold: parsed.lowStockThreshold ?? 5,
+            }),
+        })
+        window.dispatchEvent(new Event('soloos:inventory-refresh'))
+        return { reply: `Added inventory item **${json.data.item_name}**.` }
+    }
+
+    if (parsed.kind === 'update_inventory_quantity') {
+        const item = await findInventoryItem(parsed.itemName)
+        if (!item) return { reply: `No inventory item matching “${parsed.itemName}”.` }
+        await apiJson('/api/inventory', {
+            method: 'PATCH',
+            body: JSON.stringify({ id: item.id, quantity: parsed.quantity }),
+        })
+        window.dispatchEvent(new Event('soloos:inventory-refresh'))
+        return { reply: `Updated **${item.item_name}** quantity to **${parsed.quantity}**.` }
+    }
+
+    if (parsed.kind === 'list_expenses') {
+        const url = parsed.category ? `/api/expenses?category=${encodeURIComponent(parsed.category)}` : '/api/expenses'
+        const json = await apiJson(url)
+        const rows = (Array.isArray(json.data) ? json.data : []) as Array<{ category: string; amount: number; description?: string | null }>
+        const total = rows.reduce((sum, e) => sum + Number(e.amount || 0), 0)
+        return {
+            reply: rows.length
+                ? `Expenses total **₹${total.toLocaleString('en-IN')}**:\n${rows.slice(0, 8).map((e) => `• **${e.category}** ₹${Number(e.amount).toLocaleString('en-IN')}${e.description ? ` — ${e.description}` : ''}`).join('\n')}`
+                : 'No expenses found.',
+        }
+    }
+
+    if (parsed.kind === 'add_expense') {
+        const json = await apiJson('/api/expenses', {
+            method: 'POST',
+            body: JSON.stringify({
+                category: parsed.category,
+                amount: parsed.amount,
+                gst_amount: parsed.gstAmount ?? null,
+                date: parsed.date ?? new Date().toISOString().slice(0, 10),
+                description: parsed.description ?? null,
+            }),
+        })
+        window.dispatchEvent(new Event('soloos:expenses-refresh'))
+        return { reply: `Added **₹${Number(json.data.amount).toLocaleString('en-IN')}** expense for **${json.data.category}**.` }
+    }
+
+    if (parsed.kind === 'show_profit_loss') {
+        return { reply: 'Opening profit and loss.' }
+    }
+
+    if (parsed.kind === 'list_team') {
+        const json = await apiJson('/api/team-members')
+        const rows = (Array.isArray(json.data) ? json.data : []) as Array<{ name: string; role?: string | null; status?: string | null }>
+        return {
+            reply: rows.length
+                ? `Team:\n${rows.slice(0, 8).map((m) => `• **${m.name}**${m.role ? ` — ${m.role}` : ''}${m.status ? ` (${m.status})` : ''}`).join('\n')}`
+                : 'No team members yet.',
+        }
+    }
+
+    if (parsed.kind === 'add_team_member') {
+        const json = await apiJson('/api/team-members', {
+            method: 'POST',
+            body: JSON.stringify({
+                name: parsed.name,
+                role: parsed.role ?? null,
+                email: parsed.email ?? null,
+                payout_rate: parsed.payoutRate ?? null,
+                payout_type: parsed.payoutRate ? 'fixed' : undefined,
+                status: 'active',
+            }),
+        })
+        window.dispatchEvent(new Event('soloos:team-refresh'))
+        return { reply: `Added team member **${json.data.name}**.` }
+    }
+
+    if (parsed.kind === 'list_payouts') {
+        const url = parsed.status ? `/api/payouts?status=${encodeURIComponent(parsed.status)}` : '/api/payouts'
+        const json = await apiJson(url)
+        const rows = (Array.isArray(json.data) ? json.data : []) as Array<{ amount: number; status?: string | null; team_members?: { name?: string } | null }>
+        const total = rows.reduce((sum, p) => sum + Number(p.amount || 0), 0)
+        return {
+            reply: rows.length
+                ? `Payouts total **₹${total.toLocaleString('en-IN')}**:\n${rows.slice(0, 8).map((p) => `• **${p.team_members?.name ?? 'Team'}** ₹${Number(p.amount).toLocaleString('en-IN')} (${p.status ?? 'owed'})`).join('\n')}`
+                : 'No payouts found.',
+        }
+    }
+
+    if (parsed.kind === 'add_payout') {
+        const member = await findTeamMember(parsed.memberName)
+        if (!member) return { reply: `No team member matching “${parsed.memberName}”.` }
+        await apiJson('/api/payouts', {
+            method: 'POST',
+            body: JSON.stringify({
+                team_member_id: member.id,
+                amount: parsed.amount,
+                status: 'owed',
+                notes: parsed.notes ?? null,
+            }),
+        })
+        window.dispatchEvent(new Event('soloos:payouts-refresh'))
+        return { reply: `Added payout **₹${parsed.amount.toLocaleString('en-IN')}** for **${member.name}**.` }
+    }
+
+    if (parsed.kind === 'list_assignments') {
+        const json = await apiJson('/api/work-assignments')
+        const rows = (Array.isArray(json.data) ? json.data : []) as Array<{ title?: string | null; team_members?: { name?: string } | null; tasks?: { title?: string } | null }>
+        return {
+            reply: rows.length
+                ? `Assignments:\n${rows.slice(0, 8).map((a) => `• **${a.title || a.tasks?.title || 'Work'}** → ${a.team_members?.name ?? 'Unassigned'}`).join('\n')}`
+                : 'No assignments yet.',
+        }
+    }
+
+    if (parsed.kind === 'assign_work') {
+        const member = await findTeamMember(parsed.memberName)
+        if (!member) return { reply: `No team member matching “${parsed.memberName}”.` }
+        const tasks = await apiTasks(null)
+        const resolved = resolveTaskMatch(parsed.taskTitle, tasks)
+        if (!resolved.ok) return { reply: `No clear task matching “${parsed.taskTitle}”.` }
+        await apiJson('/api/work-assignments', {
+            method: 'POST',
+            body: JSON.stringify({
+                team_member_id: member.id,
+                task_id: resolved.task.id,
+                project_id: resolved.task.project_id,
+                title: resolved.task.title,
+                status: 'assigned',
+            }),
+        })
+        window.dispatchEvent(new Event('soloos:assignments-refresh'))
+        return { reply: `Assigned **${resolved.task.title}** to **${member.name}**.` }
+    }
+
+    if (parsed.kind === 'show_project_profit') {
+        const projects = await apiProjects()
+        const candidates = parsed.projectName
+            ? projects.filter((p) => scoreMatch(parsed.projectName!, p.title) > 0)
+            : projects
+        if (parsed.projectName && candidates.length === 0) {
+            return { reply: `No project matching “${parsed.projectName}”.` }
+        }
+        const lines = candidates
+            .filter((p) => p.budget)
+            .slice(0, 6)
+            .map((p) => {
+                const totalHours = (p.tasks ?? []).reduce((sum, t) => sum + (t.actual_hours || 0), 0)
+                const rate = totalHours > 0 && p.budget ? Math.round(p.budget / totalHours) : 0
+                return `• **${p.title}**: ₹${Number(p.budget).toLocaleString('en-IN')} budget · ${totalHours}h logged${rate ? ` · ₹${rate}/hr` : ''}`
+            })
+        return {
+            reply: lines.length
+                ? `Project profitability:\n${lines.join('\n')}`
+                : 'No project budgets found yet. Add a budget to see hourly profitability.',
+        }
+    }
+
+    if (parsed.kind === 'behind_schedule_projects') {
+        const projects = await apiProjects()
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+
+        const late = projects.filter((p) => {
+            if (!p.deadline) return false
+            if (p.status === 'done') return false
+            const due = new Date(p.deadline)
+            due.setHours(0, 0, 0, 0)
+            return due < today
+        })
+
+        if (late.length === 0) {
+            return { reply: 'No projects are behind schedule right now.' }
+        }
+
+        return {
+            reply:
+                `Behind schedule:\n` +
+                late
+                    .map((p) => `• **${p.title}**${p.deadline ? ` — due ${p.deadline}` : ''}`)
+                    .join('\n'),
+            chips: late.slice(0, 6).map((p) => ({
+                label: `Open ${p.title}`,
+                payload: `edit project ${p.title}`,
+            })),
+        }
     }
 
     if (parsed.kind === 'show_tasks') {
@@ -402,6 +843,62 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
         if (store.taskBoardProjectId === proj.id) store.setTaskView(proj.id, parsed.to)
         window.dispatchEvent(new Event('soloos:pm-refresh'))
         return { reply: `Renamed **${proj.title}** → **${parsed.to}**.` }
+    }
+
+    if (parsed.kind === 'open_project_editor') {
+        const projects = await apiProjects()
+        const proj = pickBestProject(parsed.name, projects)
+        if (!proj) return { reply: `Could not find project “${parsed.name}”.` }
+        store.setLastMentionedProject(proj.id)
+        window.dispatchEvent(new CustomEvent('soloos:edit-project', { detail: { id: proj.id, title: proj.title } }))
+        return { reply: `Opening **${proj.title}** for editing.` }
+    }
+
+    if (parsed.kind === 'update_project') {
+        const projects = await apiProjects()
+        const proj = pickBestProject(parsed.name, projects)
+        if (!proj) return { reply: `Could not find project “${parsed.name}”.` }
+
+        const updates: Record<string, unknown> = { id: proj.id }
+        if (parsed.updates.title !== undefined) updates.title = parsed.updates.title
+        if (parsed.updates.description !== undefined) updates.description = parsed.updates.description
+        if (parsed.updates.budget !== undefined) updates.budget = parsed.updates.budget
+        if (parsed.updates.deadline !== undefined) updates.deadline = parsed.updates.deadline
+        if (parsed.updates.status !== undefined) updates.status = mapProjectStatus(parsed.updates.status)
+        if (parsed.updates.clientName !== undefined) {
+            updates.client_id = parsed.updates.clientName ? await resolveClientId(parsed.updates.clientName) : null
+            if (parsed.updates.clientName && !updates.client_id) {
+                return { reply: `Could not find client “${parsed.updates.clientName}”.` }
+            }
+        }
+        if (Object.keys(updates).length === 1) return { reply: 'What should I update on that project?' }
+
+        const prev = { ...proj }
+        const res = await fetch('/api/projects', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updates),
+        })
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) return { reply: `Could not update project: ${json.error || res.statusText}` }
+        store.setLastMentionedProject(proj.id)
+        store.pushUndo(`Updated project “${proj.title}”`, async () => {
+            await fetch('/api/projects', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: prev.id,
+                    title: prev.title,
+                    description: prev.description ?? null,
+                    budget: prev.budget ?? null,
+                    deadline: prev.deadline ?? null,
+                    client_id: prev.client_id ?? null,
+                    status: prev.status ?? 'not_started',
+                }),
+            })
+        })
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
+        return { reply: `Updated **${proj.title}**.` }
     }
 
     if (parsed.kind === 'set_project_status') {
@@ -636,6 +1133,466 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
                 { label: 'Yes, delete', payload: 'yes' },
                 { label: 'Cancel', payload: 'no' },
             ],
+        }
+    }
+
+    if (parsed.kind === 'update_task') {
+        const pid = store.taskBoardProjectId
+        let tasks = await apiTasks(pid)
+        let resolved = resolveTaskMatch(parsed.title, tasks)
+        if (resolved.ok === false && resolved.reason === 'none' && pid) {
+            tasks = await apiTasks(null)
+            resolved = resolveTaskMatch(parsed.title, tasks)
+        }
+        if (resolved.ok === false && resolved.reason === 'none') {
+            return { reply: `No task matching “${parsed.title}”.` }
+        }
+        if (resolved.ok === false && resolved.reason === 'ambiguous') {
+            return {
+                reply: `Multiple tasks match “${parsed.title}”. Pick one first:`,
+                chips: resolved.candidates.map((c) => ({
+                    label: `${c.title} (${c.projects?.title ?? 'project'})`,
+                    payload: `show tasks in ${c.projects?.title ?? ''}`.trim(),
+                })),
+            }
+        }
+        const task = resolved.task
+        const updates: Record<string, unknown> = { id: task.id }
+        if (parsed.updates.title !== undefined) updates.title = parsed.updates.title
+        if (parsed.updates.estimatedHours !== undefined) updates.estimated_hours = parsed.updates.estimatedHours
+        if (parsed.updates.dueDate !== undefined) updates.due_date = parsed.updates.dueDate
+        if (parsed.updates.status !== undefined) updates.status = mapTaskStatus(parsed.updates.status)
+        if (Object.keys(updates).length === 1) return { reply: 'What should I update on that task?' }
+
+        const prev = { ...task }
+        const res = await fetch('/api/tasks', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updates),
+        })
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) return { reply: `Could not update task: ${json.error || res.statusText}` }
+        store.setLastMentionedTask(task.id)
+        store.pushUndo(`Updated task “${task.title}”`, async () => {
+            await fetch('/api/tasks', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: prev.id,
+                    title: prev.title,
+                    status: prev.status,
+                    estimated_hours: prev.estimated_hours ?? null,
+                    due_date: prev.due_date ?? null,
+                }),
+            })
+        })
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
+        return { reply: `Updated task **${task.title}**.` }
+    }
+
+    if (parsed.kind === 'list_clients') {
+        const ui = useStore.getState()
+        ui.clearFilters()
+        if (parsed.search) ui.setFilter('search', parsed.search)
+        if (parsed.status) ui.setFilter('status', parsed.status)
+        if (parsed.city) ui.setFilter('city', parsed.city)
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
+        const parts: string[] = ['Showing clients']
+        if (parsed.status) parts.push(`status **${parsed.status}**`)
+        if (parsed.city) parts.push(`in **${parsed.city}**`)
+        if (parsed.search) parts.push(`matching **${parsed.search}**`)
+        return { reply: `${parts.join(' ')}.` }
+    }
+
+    if (parsed.kind === 'list_invoices') {
+        return { reply: 'Showing invoices.' }
+    }
+
+    if (parsed.kind === 'list_invoice_templates') {
+        const json = await apiJson('/api/invoice-templates')
+        const rows = (Array.isArray(json.data) ? json.data : []) as Array<{ name: string; is_default?: boolean }>
+        return {
+            reply: rows.length
+                ? `Invoice templates:\n${rows.map((t) => `• **${t.name}**${t.is_default ? ' (default)' : ''}`).join('\n')}`
+                : 'No invoice templates yet.',
+        }
+    }
+
+    if (parsed.kind === 'create_invoice_template') {
+        const json = await apiJson('/api/invoice-templates', {
+            method: 'POST',
+            body: JSON.stringify({
+                name: parsed.name,
+                accent_color: parsed.accentColor ?? '#7c3aed',
+                payment_terms: parsed.terms ?? 'Due on receipt',
+                default_email_subject: parsed.subject ?? 'Invoice from SoloOS',
+                default_email_message: parsed.message ?? 'Hi, please find the invoice attached.',
+                is_default: false,
+            }),
+        })
+        window.dispatchEvent(new Event('soloos:templates-refresh'))
+        return { reply: `Created invoice template **${json.data.name}**.` }
+    }
+
+    if (parsed.kind === 'update_invoice_template') {
+        const template = await findInvoiceTemplate(parsed.name)
+        if (!template) return { reply: `No invoice template matching “${parsed.name}”.` }
+        const updates: Record<string, unknown> = { id: template.id }
+        if (parsed.updates.subject !== undefined) updates.default_email_subject = parsed.updates.subject
+        if (parsed.updates.message !== undefined) updates.default_email_message = parsed.updates.message
+        if (parsed.updates.terms !== undefined) updates.payment_terms = parsed.updates.terms
+        if (parsed.updates.footer !== undefined) updates.footer_note = parsed.updates.footer
+        if (parsed.updates.accentColor !== undefined) updates.accent_color = parsed.updates.accentColor
+        if (parsed.updates.isDefault !== undefined) updates.is_default = parsed.updates.isDefault
+        if (Object.keys(updates).length === 1) return { reply: 'What should I change on that template?' }
+
+        if (parsed.updates.isDefault) {
+            await setDefaultInvoiceTemplate(template.id)
+        } else {
+            await apiJson('/api/invoice-templates', {
+                method: 'PATCH',
+                body: JSON.stringify(updates),
+            })
+        }
+        window.dispatchEvent(new Event('soloos:templates-refresh'))
+        return { reply: `Updated invoice template **${template.name}**.` }
+    }
+
+    if (parsed.kind === 'list_documents') {
+        const url = parsed.documentType ? `/api/ai-documents?type=${parsed.documentType}` : '/api/ai-documents'
+        const json = await apiJson(url)
+        const rows = (Array.isArray(json.data) ? json.data : []) as Array<{ title: string; document_type: string; status: string }>
+        return {
+            reply: rows.length
+                ? `Documents:\n${rows.slice(0, 8).map((d) => `• **${d.title}** — ${d.document_type.replace('_', ' ')} (${d.status})`).join('\n')}`
+                : 'No saved documents yet.',
+        }
+    }
+
+    if (parsed.kind === 'draft_contract') {
+        const client = parsed.clientName ? await resolveClient(parsed.clientName) : null
+        if (parsed.clientName && !client) return { reply: `Could not find client “${parsed.clientName}”.` }
+        const projectResolution = await resolveProjectForDocument({
+            projectName: parsed.projectName,
+            clientId: client?.id ?? null,
+        })
+        if (!projectResolution.ok) {
+            if (projectResolution.reason === 'missing_project') {
+                return { reply: 'Which assigned project should this contract use? Say **draft contract for [client] project [project name]**.' }
+            }
+            if (projectResolution.reason === 'project_not_found') {
+                return { reply: `Could not find project “${parsed.projectName}”.` }
+            }
+            if (projectResolution.reason === 'project_has_no_client') {
+                return {
+                    reply: `Project **${projectResolution.project?.title}** is not assigned to a client. Assign a client first, then draft the contract.`,
+                    chips: [{ label: 'Edit project', payload: `edit project ${projectResolution.project?.title ?? ''}`.trim() }],
+                }
+            }
+            if (projectResolution.reason === 'client_mismatch') {
+                return { reply: `Project **${projectResolution.project?.title}** is assigned to **${projectResolution.project?.clients?.name ?? 'another client'}**, not **${client?.name}**. I blocked this to avoid sending the wrong contract.` }
+            }
+        }
+        if (!projectResolution.ok) return { reply: 'Could not prepare the contract from that project.' }
+        const project = projectResolution.project
+        const contractClient = client ?? (project.clients ? { id: project.clients.id, name: project.clients.name, email: null } : null)
+        const title = parsed.title || documentTitle('contract', contractClient?.name, project.title)
+        const content =
+            `SERVICE AGREEMENT\n\n` +
+            `Client: ${contractClient?.name || '[Client name]'}\n` +
+            `Project: ${project.title}\n` +
+            `Budget: ${project.budget ? `₹${Number(project.budget).toLocaleString('en-IN')}` : '[Add amount]'}\n` +
+            `Deadline: ${project.deadline || '[Add deadline]'}\n\n` +
+            `Scope of Work:\n${project.description || '[Describe deliverables, milestones, revision limits, and acceptance criteria.]'}\n\n` +
+            `Commercial Terms:\n${parsed.terms || 'Payment terms, taxes, late fees, and milestone schedule to be reviewed and finalized by both parties.'}\n\n` +
+            `Timeline:\nThe work will follow the project deadline and any milestone dates agreed in writing.\n\n` +
+            `This is a draft generated by SoloOS and should be reviewed before sending.`
+        await apiJson('/api/ai-documents', {
+            method: 'POST',
+            body: JSON.stringify({
+                document_type: 'contract',
+                title,
+                client_id: contractClient?.id ?? null,
+                project_id: project.id,
+                recipient_email: contractClient?.email ?? null,
+                status: 'draft',
+                question_answers: {
+                    clientName: contractClient?.name,
+                    projectName: project.title,
+                    terms: parsed.terms,
+                },
+                content,
+            }),
+        })
+        window.dispatchEvent(new Event('soloos:documents-refresh'))
+        return { reply: `Saved contract draft **${title}**. Review it before sending.` }
+    }
+
+    if (parsed.kind === 'draft_legal_notice') {
+        const invoice = parsed.invoiceNumber ? await findInvoice({ invoiceNumber: parsed.invoiceNumber }) : null
+        if (parsed.invoiceNumber && !invoice) return { reply: `Could not find invoice **${parsed.invoiceNumber}**.` }
+        if (!invoice) return { reply: 'Which unpaid invoice should this legal notice refer to? Say **draft legal notice for [client] invoice [invoice number]**.' }
+        if (parsed.clientName && invoice.clients?.name && scoreMatch(parsed.clientName, invoice.clients.name) === 0) {
+            return { reply: `Invoice **${invoice.invoice_number}** belongs to **${invoice.clients.name}**, not **${parsed.clientName}**. I blocked this to avoid sending the wrong legal notice.` }
+        }
+        const title = parsed.title || documentTitle('legal_notice', invoice.clients?.name ?? parsed.clientName)
+        const content =
+            `LEGAL NOTICE FOR NON-PAYMENT\n\n` +
+            `To: ${invoice.clients?.name || parsed.clientName || '[Client name]'}\n` +
+            `Invoice: ${invoice.invoice_number}\n\n` +
+            `This notice records that payment remains outstanding despite prior reminders. ` +
+            `Please clear the dues within the stated period to avoid further action.\n\n` +
+            `Outstanding Amount: ${invoice.total ? `₹${Number(invoice.total).toLocaleString('en-IN')}` : '[Amount]'}\nDue Date: [Due date]\n\n` +
+            `This is a draft generated by SoloOS. Review with a qualified professional before sending.`
+        await apiJson('/api/ai-documents', {
+            method: 'POST',
+            body: JSON.stringify({
+                document_type: 'legal_notice',
+                title,
+                client_id: invoice.clients?.id ?? null,
+                invoice_id: invoice?.id ?? null,
+                recipient_email: invoice.clients?.email ?? null,
+                status: 'draft',
+                question_answers: {
+                    clientName: invoice.clients?.name ?? parsed.clientName,
+                    invoiceNumber: invoice.invoice_number,
+                },
+                content,
+            }),
+        })
+        window.dispatchEvent(new Event('soloos:documents-refresh'))
+        return { reply: `Saved legal notice draft **${title}**. I will not send it without confirmation.` }
+    }
+
+    if (parsed.kind === 'send_document') {
+        const doc = await findDocument({
+            title: parsed.title,
+            clientName: parsed.clientName,
+            documentType: parsed.documentType,
+        })
+        if (doc === 'ambiguous') {
+            return {
+                reply: 'Which saved document should I send?',
+                chips: [{ label: 'Show documents', payload: 'show documents' }],
+            }
+        }
+        if (!doc) {
+            const label = parsed.documentType === 'legal_notice' ? 'legal notice' : parsed.documentType === 'contract' ? 'contract' : 'document'
+            return { reply: `No saved ${label} found. Draft it first, then ask me to send it.` }
+        }
+        const recipientEmail = doc.recipient_email || doc.clients?.email || ''
+        if (!recipientEmail) {
+            return { reply: `**${doc.title}** has no recipient email. Add the client's email before sending.` }
+        }
+        store.setPendingConfirm({
+            kind: 'send_document',
+            documentId: doc.id,
+            title: doc.title,
+            recipientEmail,
+            documentType: doc.document_type,
+        })
+        const serious = doc.document_type === 'legal_notice' ? ' Legal notices can have legal consequences.' : ''
+        return {
+            reply: `Send **${doc.title}** to **${recipientEmail}**?${serious}`,
+            chips: [
+                { label: 'Yes, send', payload: 'yes' },
+                { label: 'Cancel', payload: 'no' },
+            ],
+        }
+    }
+
+    if (parsed.kind === 'list_payment_links') {
+        const json = await apiJson('/api/payment-links')
+        const rows = (Array.isArray(json.data) ? json.data : []) as Array<{ amount?: number | null; status?: string | null; url?: string | null; invoices?: { invoice_number?: string } | null }>
+        return {
+            reply: rows.length
+                ? `Payment links:\n${rows.slice(0, 8).map((l) => `• **${l.invoices?.invoice_number ?? 'Payment'}** ${l.amount ? `₹${Number(l.amount).toLocaleString('en-IN')}` : ''} (${l.status ?? 'created'})`).join('\n')}`
+                : 'No payment links yet.',
+        }
+    }
+
+    if (parsed.kind === 'create_payment_link') {
+        const invoice = await findInvoice({ invoiceNumber: parsed.invoiceNumber, clientName: parsed.clientName })
+        if (!invoice) return { reply: 'Which invoice should I create a payment link for?' }
+        await apiJson('/api/payment-links', {
+            method: 'POST',
+            body: JSON.stringify({
+                invoice_id: invoice.id,
+                provider: 'razorpay',
+                amount: invoice.total ?? null,
+                status: 'pending_provider_setup',
+                url: null,
+            }),
+        })
+        window.dispatchEvent(new Event('soloos:payment-links-refresh'))
+        return { reply: `Saved payment link request for **${invoice.invoice_number}**. Razorpay keys/webhook still need to be connected for live collection.` }
+    }
+
+    if (parsed.kind === 'show_invoice') {
+        if (!parsed.invoiceNumber && !parsed.clientName) {
+            return { reply: 'Which invoice should I open?', chips: [{ label: 'Show invoices', payload: 'show invoices' }] }
+        }
+        const invoice = await findInvoice({
+            invoiceNumber: parsed.invoiceNumber,
+            clientName: parsed.clientName,
+        })
+        if (!invoice) return { reply: 'Invoice not found.' }
+        const ui = useStore.getState()
+        ui.clearFilters()
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
+        return {
+            reply: `Invoice **${invoice.invoice_number}** · ${invoice.clients?.name ?? 'Unknown client'} · **${invoice.status}**${invoice.total ? ` · ₹${invoice.total.toLocaleString('en-IN')}` : ''}.`,
+            chips: [
+                { label: 'Email this invoice', payload: `email invoice ${invoice.invoice_number}` },
+                { label: 'Mark paid', payload: `mark invoice ${invoice.invoice_number} as paid` },
+            ],
+        }
+    }
+
+    if (parsed.kind === 'mark_invoice_status') {
+        const invoice = await findInvoice({
+            invoiceNumber: parsed.invoiceNumber,
+            clientName: parsed.clientName,
+        })
+        if (!invoice) return { reply: 'Invoice not found.' }
+        store.setPendingConfirm({
+            kind: 'mark_invoice_status',
+            invoiceId: invoice.id,
+            invoiceNumber: invoice.invoice_number,
+            status: parsed.status,
+        })
+        return {
+            reply: `Mark invoice **${invoice.invoice_number}** as **${parsed.status}**?`,
+            chips: [
+                { label: 'Yes, update', payload: 'yes' },
+                { label: 'Cancel', payload: 'no' },
+            ],
+        }
+    }
+
+    if (parsed.kind === 'create_invoice') {
+        if (typeof parsed.amount !== 'number' || parsed.amount <= 0) {
+            return {
+                reply: `What amount should I put on the invoice for **${parsed.clientName}**?`,
+                chips: [
+                    { label: '5,000', payload: `create invoice for ${parsed.clientName} 5000` },
+                    { label: '10,000', payload: `create invoice for ${parsed.clientName} 10000` },
+                ],
+            }
+        }
+        const result = await createInvoiceViaAi({
+            clientName: parsed.clientName,
+            amount: parsed.amount,
+            description: parsed.description,
+        })
+        if (!result.ok) return { reply: `Could not create invoice: ${result.message}` }
+        window.dispatchEvent(new Event('soloos:pm-refresh'))
+        return {
+            reply: result.message,
+            chips: result.invoiceNumber
+                ? [{ label: `View ${result.invoiceNumber}`, payload: 'show invoices' }]
+                : undefined,
+        }
+    }
+
+    if (parsed.kind === 'email_invoice') {
+        if (!parsed.invoiceNumber && !parsed.clientName) {
+            return {
+                reply: 'Which invoice should I send?',
+                chips: [{ label: 'Show invoices', payload: 'show invoices' }],
+            }
+        }
+        store.setPendingConfirm({
+            kind: 'email_invoice',
+            invoiceNumber: parsed.invoiceNumber,
+            clientName: parsed.clientName,
+        })
+        const target = parsed.invoiceNumber
+            ? `invoice **${parsed.invoiceNumber}**`
+            : parsed.clientName
+              ? `the invoice for **${parsed.clientName}**`
+              : 'the selected invoice'
+        return {
+            reply: `Send ${target} by email?`,
+            chips: [
+                { label: 'Yes, send', payload: 'yes' },
+                { label: 'Cancel', payload: 'no' },
+            ],
+        }
+    }
+
+    if (parsed.kind === 'send_reminder') {
+        const appt = await findNextAppointment(parsed.clientName)
+        if (!appt) {
+            return {
+                reply: parsed.clientName
+                    ? `No upcoming appointment found for “${parsed.clientName}”.`
+                    : 'No upcoming appointment found.',
+            }
+        }
+        store.setPendingConfirm({
+            kind: 'send_reminder',
+            appointmentId: appt.id,
+            title: appt.title,
+            clientName: appt.clients?.name ?? parsed.clientName,
+        })
+        return {
+            reply: `Send reminder for **${appt.title}**${appt.clients?.name ? ` to **${appt.clients.name}**` : ''}?`,
+            chips: [
+                { label: 'Yes, send reminder', payload: 'yes' },
+                { label: 'Cancel', payload: 'no' },
+            ],
+        }
+    }
+
+    // ─── Timer control via chat ─────────────────────────────────────────
+    if (parsed.kind === 'start_timer') {
+        const taskQuery = parsed.task?.trim()
+        // Try to resolve a task by name if provided
+        if (taskQuery) {
+            let tasks = await apiTasks(null)
+            let resolved = resolveTaskMatch(taskQuery, tasks)
+            if (resolved.ok === false && resolved.reason === 'none') {
+                // Try global search
+                tasks = await apiTasks(null)
+                resolved = resolveTaskMatch(taskQuery, tasks)
+            }
+            if (resolved.ok === false && resolved.reason === 'ambiguous') {
+                return {
+                    reply: `Multiple tasks match “${taskQuery}”. Pick one to start:`,
+                    chips: resolved.candidates.map((c) => ({
+                        label: `${c.title} (${c.projects?.title ?? 'project'})`,
+                        payload: `start timer for ${c.title}`,
+                    })),
+                }
+            }
+            if (resolved.ok === false) {
+                return { reply: `No task matching “${taskQuery}”. Create it first with **add task ${taskQuery}**.` }
+            }
+            const task = resolved.task
+            const { startTimerViaAi } = await import('./timer-ai-actions')
+            const result = await startTimerViaAi({ taskId: task.id })
+            if (!result.ok) return { reply: `Could not start timer: ${result.message}` }
+            window.dispatchEvent(new Event('soloos:time-refresh'))
+            return { reply: `Started timer for **${task.title}**.` }
+        }
+
+        const { startTimerViaAi } = await import('./timer-ai-actions')
+        const result = await startTimerViaAi({})
+        if (!result.ok) return { reply: `Could not start timer: ${result.message}` }
+        window.dispatchEvent(new Event('soloos:time-refresh'))
+        return { reply: 'Started timer.' }
+    }
+
+    if (parsed.kind === 'stop_timer') {
+        try {
+            const { stopTimerViaAi } = await import('./timer-ai-actions')
+            const result = await stopTimerViaAi()
+            if (!result.ok) return { reply: `Could not stop timer: ${result.message}` }
+            window.dispatchEvent(new Event('soloos:time-refresh'))
+            return { reply: result.message.startsWith('Stopped') ? `Stopped timer.` : result.message }
+        } catch {
+            return { reply: 'Failed to stop timer.' }
         }
     }
 

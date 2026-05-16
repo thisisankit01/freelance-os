@@ -4,8 +4,16 @@ import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 
+type OverdueInvoice = {
+    id: string
+    invoice_number: string
+    due_date: string | null
+    total: number
+    clients?: { name?: string | null } | null
+}
+
 export function PaymentStatus() {
-    const [overdue, setOverdue] = useState<any[]>([])
+    const [overdue, setOverdue] = useState<OverdueInvoice[]>([])
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {

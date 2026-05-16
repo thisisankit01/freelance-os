@@ -6,10 +6,31 @@ import { supabase } from '@/lib/supabase'
 import { useStore } from '@/lib/store'
 import { Badge } from '@/components/ui/badge'
 
+type ClientDetails = {
+    id: string
+    name: string
+    email?: string | null
+    phone?: string | null
+    company?: string | null
+    city?: string | null
+    status?: 'active' | 'inactive' | string
+    total_billed?: number | null
+    total_paid?: number | null
+    notes?: string | null
+}
+
+type ClientInvoice = {
+    id: string
+    invoice_number: string
+    status: string
+    total: number
+    created_at: string
+}
+
 export function ClientCard() {
     const { selectedClientId, setComponents } = useStore()
-    const [client, setClient] = useState<any>(null)
-    const [invoices, setInvoices] = useState<any[]>([])
+    const [client, setClient] = useState<ClientDetails | null>(null)
+    const [invoices, setInvoices] = useState<ClientInvoice[]>([])
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
@@ -43,7 +64,7 @@ export function ClientCard() {
     if (loading) return <div className="bg-white border rounded-xl p-8 animate-pulse">Loading...</div>
     if (!client) return <div className="bg-white border rounded-xl p-8 text-center text-zinc-500">Client not found</div>
 
-    const pending = client.total_billed - client.total_paid
+    const pending = Number(client.total_billed || 0) - Number(client.total_paid || 0)
 
     return (
         <motion.div
@@ -85,11 +106,11 @@ export function ClientCard() {
             <div className="px-5 py-3 border-b border-zinc-100 grid grid-cols-3 gap-4">
                 <div>
                     <p className="text-xs text-zinc-400 mb-0.5">Total billed</p>
-                    <p className="text-sm font-medium text-zinc-800">₹{client.total_billed.toLocaleString('en-IN')}</p>
+                    <p className="text-sm font-medium text-zinc-800">₹{Number(client.total_billed || 0).toLocaleString('en-IN')}</p>
                 </div>
                 <div>
                     <p className="text-xs text-zinc-400 mb-0.5">Total paid</p>
-                    <p className="text-sm font-medium text-emerald-600">₹{client.total_paid.toLocaleString('en-IN')}</p>
+                    <p className="text-sm font-medium text-emerald-600">₹{Number(client.total_paid || 0).toLocaleString('en-IN')}</p>
                 </div>
                 <div>
                     <p className="text-xs text-zinc-400 mb-0.5">Pending</p>

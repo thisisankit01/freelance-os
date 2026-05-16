@@ -28,8 +28,38 @@ type PendingConfirm =
           nextStatus: string
           summary: string
       }
+    | {
+          kind: 'email_invoice'
+          invoiceNumber?: string
+          clientName?: string
+      }
+    | {
+          kind: 'send_reminder'
+          appointmentId: string
+          title: string
+          clientName?: string
+      }
+    | {
+          kind: 'mark_invoice_status'
+          invoiceId: string
+          invoiceNumber: string
+          status: string
+      }
+    | {
+          kind: 'send_document'
+          documentId: string
+          title: string
+          recipientEmail: string
+          documentType: 'contract' | 'legal_notice'
+      }
 
 type UndoFn = () => Promise<void>
+
+type PendingClarification = {
+    originalPrompt: string
+    slot: 'project' | 'client' | 'invoice' | 'amount' | 'recipient' | 'detail'
+    createdAt: number
+}
 
 const LS_KEY = 'soloos:pm-chat:v1'
 const MAX_MESSAGES = 100
@@ -63,6 +93,7 @@ type PmChatStore = {
     lastMentionedTaskId: string | null
     lastMentionedProjectId: string | null
     pendingConfirm: PendingConfirm | null
+    pendingClarification: PendingClarification | null
     undoStack: { label: string; run: UndoFn }[]
 
     addUserMessage: (content: string) => void
@@ -73,6 +104,7 @@ type PmChatStore = {
     setLastMentionedTask: (id: string | null) => void
     setLastMentionedProject: (id: string | null) => void
     setPendingConfirm: (p: PendingConfirm | null) => void
+    setPendingClarification: (p: PendingClarification | null) => void
     pushUndo: (label: string, run: UndoFn) => void
     popUndo: () => Promise<{ label: string; ok: boolean } | null>
     cancelPending: () => void
@@ -86,6 +118,7 @@ export const usePmChatStore = create<PmChatStore>((set, get) => ({
     lastMentionedTaskId: null,
     lastMentionedProjectId: null,
     pendingConfirm: null,
+    pendingClarification: null,
     undoStack: [],
 
     addUserMessage: (content) => {
@@ -137,6 +170,7 @@ export const usePmChatStore = create<PmChatStore>((set, get) => ({
     setLastMentionedProject: (id) => set({ lastMentionedProjectId: id }),
 
     setPendingConfirm: (p) => set({ pendingConfirm: p }),
+    setPendingClarification: (p) => set({ pendingClarification: p }),
 
     pushUndo: (label, run) =>
         set((s) => {

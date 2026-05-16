@@ -14,6 +14,8 @@ interface TimerStore {
   elapsed: number
   isRunning: boolean
   intervalId: NodeJS.Timeout | null
+  syncInFlight: boolean
+  lastSyncAt: number
   setActiveEntry: (entry: TimeEntry | null) => void
   startTimer: (entry: TimeEntry) => void
   stopTimer: () => void
@@ -26,9 +28,19 @@ export const useTimerStore = create<TimerStore>((set, get) => ({
   elapsed: 0,
   isRunning: false,
   intervalId: null,
+  syncInFlight: false,
+  lastSyncAt: 0,
 
   setActiveEntry: (entry) => {
     const state = get()
+    if (
+      entry &&
+      state.activeEntry?.id === entry.id &&
+      state.activeEntry.started_at === entry.started_at &&
+      state.isRunning
+    ) {
+      return
+    }
     if (state.intervalId) clearInterval(state.intervalId)
 
     if (entry && !entry.ended_at) {
@@ -65,6 +77,11 @@ export const useTimerStore = create<TimerStore>((set, get) => ({
   },
 
   syncWithServer: async () => {
+    const state = get()
+    if (state.syncInFlight) return
+    const now = Date.now()
+    if (now - state.lastSyncAt < 5000) return
+    set({ syncInFlight: true, lastSyncAt: now })
     try {
       const res = await fetch('/api/time-entries')
       const json = await res.json()
@@ -73,6 +90,8 @@ export const useTimerStore = create<TimerStore>((set, get) => ({
       else get().stopTimer()
     } catch (err) {
       console.error('Timer sync failed:', err)
+    } finally {
+      set({ syncInFlight: false })
     }
   },
 }))

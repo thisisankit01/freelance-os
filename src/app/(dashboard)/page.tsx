@@ -22,6 +22,15 @@ import { ProjectBoard } from "@/components/registry/ProjectBoard";
 import { TaskBoard } from "@/components/registry/TaskBoard";
 import { TimeTracker } from "@/components/registry/TimeTracker";
 import { ProjectProfit } from "@/components/registry/ProjectProfit";
+import { InventoryGrid } from "@/components/registry/InventoryGrid";
+import { ExpenseTracker } from "@/components/registry/ExpenseTracker";
+import { ProfitLoss } from "@/components/registry/ProfitLoss";
+import { TeamTable } from "@/components/registry/TeamTable";
+import { PayoutTracker } from "@/components/registry/PayoutTracker";
+import { WorkAssignment } from "@/components/registry/WorkAssignment";
+import { InvoiceTemplateEditor } from "@/components/registry/InvoiceTemplateEditor";
+import { AiDocumentCenter } from "@/components/registry/AiDocumentCenter";
+import { PaymentLinks } from "@/components/registry/PaymentLinks";
 import { greetingMessageAccordingToTimeZone } from "@/lib/utils";
 import { PmUrlSync } from "@/components/layout/PmUrlSync";
 import { isPmWorkspaceActive } from "@/lib/pm-workspace";
@@ -42,6 +51,15 @@ const REGISTRY: Record<string, React.ComponentType> = {
   TaskBoard,
   TimeTracker,
   ProjectProfit,
+  InventoryGrid,
+  ExpenseTracker,
+  ProfitLoss,
+  TeamTable,
+  PayoutTracker,
+  WorkAssignment,
+  InvoiceTemplateEditor,
+  AiDocumentCenter,
+  PaymentLinks,
 };
 
 export default function Dashboard() {

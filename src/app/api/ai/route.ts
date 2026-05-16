@@ -6,6 +6,7 @@
 
 import { generateText } from 'ai'
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
+import { guardUnsafeOrUnsupportedIntent, isSensitiveWorkspaceAction } from '@/lib/safety-intent-guard'
 
 const openrouter = createOpenRouter({
     apiKey: process.env.OPENROUTER_API_KEY,
@@ -27,7 +28,16 @@ const VALID_COMPONENTS = [
     'ProjectBoard',
     'TaskBoard',
     'TimeTracker',
-    'ProjectProfit'
+    'ProjectProfit',
+    'InventoryGrid',
+    'ExpenseTracker',
+    'ProfitLoss',
+    'TeamTable',
+    'PayoutTracker',
+    'WorkAssignment',
+    'InvoiceTemplateEditor',
+    'AiDocumentCenter',
+    'PaymentLinks'
 ] as const
 
 type Component = typeof VALID_COMPONENTS[number]
@@ -56,6 +66,13 @@ export type AriaResponse = {
         month?: string
         /** JSON array of { clientName?, date, time, title?, notes? } — set by sanitise from AI "meetings" */
         meetingsJson?: string
+    }
+    invoiceData?: {
+        clientName?: string
+        amount?: number
+        description?: string
+        invoiceNumber?: string
+        invoiceId?: string
     }
     projectData?: {
         /** for edit_project: project id or title to fuzzy-match */
@@ -157,6 +174,20 @@ function sanitise(raw: Record<string, unknown>): AriaResponse {
         : undefined
 
     // Project data for edit_project action
+    const rawInvData = raw.invoiceData
+    const invoiceData = typeof rawInvData === 'object' && rawInvData !== null
+        ? (rawInvData as Record<string, unknown>)
+        : undefined
+    const safeInvoice: AriaResponse['invoiceData'] = invoiceData
+        ? {
+            ...(typeof invoiceData.clientName === 'string' ? { clientName: invoiceData.clientName } : {}),
+            ...(typeof invoiceData.amount === 'number' ? { amount: invoiceData.amount } : {}),
+            ...(typeof invoiceData.description === 'string' ? { description: invoiceData.description } : {}),
+            ...(typeof invoiceData.invoiceNumber === 'string' ? { invoiceNumber: invoiceData.invoiceNumber } : {}),
+            ...(typeof invoiceData.invoiceId === 'string' ? { invoiceId: invoiceData.invoiceId } : {}),
+        }
+        : undefined
+
     const rawProjData = raw.projectData
     const projectData = typeof rawProjData === 'object' && rawProjData !== null
         ? (rawProjData as Record<string, unknown>)
@@ -175,6 +206,7 @@ function sanitise(raw: Record<string, unknown>): AriaResponse {
         filters,
         action: actionStr,
         appointmentData: safeAppt && Object.keys(safeAppt).length > 0 ? safeAppt : undefined,
+        invoiceData: safeInvoice && Object.keys(safeInvoice).length > 0 ? safeInvoice : undefined,
         projectData: safeProject && Object.keys(safeProject).length > 0 ? safeProject : undefined,
         emptyMessage,
     }
@@ -343,7 +375,8 @@ BUSINESS REQUESTS (anything about clients, invoices, payments, earnings):
   • "current" / "ongoing" / "working with" = active status  
   • "who owes" / "hasn't paid" / "late" / "due" / "pending" / "unpaid" = overdue
   • "settled" / "received" / "cleared" / "done" = paid
-  • "make bill" / "generate invoice" / "new invoice" / "charge someone" = InvoiceBuilder
+  • "make bill" / "generate invoice" / "new invoice" / "charge someone" = InvoiceBuilder or InvoiceList, action: "create_invoice"
+  • "send invoice" / "email invoice" / "mail invoice" = InvoiceList, action: "email_invoice"
   • "show invoices" / "my bills" / "list invoices" = InvoiceList
   • "how much did I make" / "my money" / "revenue" / "income" = StatsBar
   • ANY city/location anywhere in the world = ClientTable with { "city": "<that city>" } filter
@@ -356,13 +389,27 @@ OUT OF DOMAIN ("what's the weather", "write me a poem", "who won the match"):
 → changeUI: false. Reply warmly, acknowledge it's outside your area, offer to help with their freelance work instead. Be friendly not robotic.
 
 UNCLEAR / VAGUE ("show me stuff", "the thing", "you know what I mean"):
-→ changeUI: true. Make your best guess. Show StatsBar + ClientTable. Mention what you showed.
+→ changeUI: false. Ask one short clarification question. Never change UI when unsure.
 
 COMPLAINTS ("this is useless", "you don't understand"):
 → changeUI: false. Apologise sincerely, ask them to rephrase, offer examples.
 
 FOLLOWUP QUESTIONS (uses context from history like "now show only the paid ones"):
 → changeUI: true. Use history to understand what they're referring to.
+
+CLARIFICATION RULE:
+If the user's business intent is understandable but required details are missing, do not pretend the task is complete.
+Ask a short follow-up question.
+
+Examples:
+- "create invoice" but no client -> reply: "Who should I create the invoice for?", changeUI false.
+- "send invoice" but no client/invoice -> reply: "Which invoice should I send?", changeUI true, components ["InvoiceList"].
+- "schedule meeting" but no client/date/time -> reply: "Who should I schedule it with, and when?", changeUI true, components ["BookingCalendar"].
+- "delete it" with no clear target -> reply: "What should I delete?", changeUI false.
+- "send legal notice" -> reply: "I can draft it, but I’ll need the client and unpaid invoice first.", changeUI false.
+
+Never fabricate missing amounts, dates, client names, project names, invoice numbers, or recipients.
+
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RESPONSE FORMAT (always valid JSON):
@@ -386,6 +433,13 @@ function genericFallback(): AriaResponse {
         reply: "I'm here to help with your freelance business. Ask me about clients, invoices, payments, or anything related!",
         changeUI: false,
     }
+}
+
+function needsConfirmationBeforeAction(prompt: string, response: AriaResponse) {
+    const mutationAction = response.action && response.action !== 'none'
+    if (!mutationAction) return false
+
+    return /\b(send|email|mail|share|delete|remove|cancel|payment|pay|checkout|legal|contract|notice|whatsapp)\b/i.test(prompt)
 }
 
 export async function POST(req: Request) {
@@ -510,6 +564,24 @@ Generate 6-8 commands. Good examples:
         } satisfies AriaResponse)
     }
 
+    const guarded = guardUnsafeOrUnsupportedIntent(prompt)
+    if (guarded.blocked) {
+        return Response.json({
+            reply: guarded.reply,
+            changeUI: false,
+            action: 'none',
+        } satisfies AriaResponse)
+    }
+
+    const sensitive = isSensitiveWorkspaceAction(prompt)
+    if (sensitive.serious) {
+        return Response.json({
+            reply: sensitive.reply,
+            changeUI: false,
+            action: 'none',
+        } satisfies AriaResponse)
+    }
+
     try {
         // Build messages array with conversation history
         const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
@@ -546,6 +618,14 @@ Generate 6-8 commands. Good examples:
 
         // Sanitise — never crash, always return something valid
         const response = reconcileBulkCancelDayVsMonth(prompt, sanitise(parsed))
+
+        if (needsConfirmationBeforeAction(prompt, response)) {
+            return Response.json({
+                reply: "I need confirmation before I do that. Please use the command bar flow so I can show the exact target first.",
+                changeUI: false,
+                action: 'none',
+            } satisfies AriaResponse)
+        }
 
         console.log(`[Aria] "${prompt}" → "${response.reply}" (changeUI: ${response.changeUI}, action: ${response.action})`)
         return Response.json(response)
@@ -593,12 +673,36 @@ Generate 6-8 commands. Good examples:
             } satisfies AriaResponse)
         }
 
+        const seriousUnsupportedPattern =
+            /\b(legal\s+notice|non[-\s]?payment\s+notice|demand\s+notice|legal\s+warning|contract|agreement|whatsapp|razorpay|payment\s+link|upi\s+link)\b/i
+
+        if (seriousUnsupportedPattern.test(prompt)) {
+            return Response.json({
+                reply: "I can help draft that, but I need the right details first and won’t send anything without confirmation.",
+                changeUI: false,
+                action: 'none',
+            } satisfies AriaResponse)
+        }
+
+        const vagueSendDeletePattern = /^(?:\[today:[^\]]+\]\s*)?(send it|send this|mail it|email it|share it|delete it|remove it)$/i
+
+        if (vagueSendDeletePattern.test(prompt.trim())) {
+            return Response.json({
+                reply: "What exactly should I act on? Please mention the item and recipient.",
+                changeUI: false,
+                action: 'none',
+            } satisfies AriaResponse)
+        }
+
         // Business-related query — show default dashboard
         const businessPattern = /\b(client|clients|invoice|invoices|payment|payments|earn|revenue|money|due|overdue|paid|stats|city|active|inactive|bill|billing)\b/i
         if (businessPattern.test(prompt)) {
             const components: Component[] = []
-            if (/\b(invoice|invoices|bill|billing)\b/i.test(prompt)) {
-                if (/\b(create|new|make|generate)\b/i.test(prompt)) components.push('InvoiceBuilder')
+            const isInvoiceQuery = /\b(invoice|invoices|bill|billing)\b/i.test(prompt)
+            const isInvoiceCreation = isInvoiceQuery && /\b(create|new|make|generate|issue|bill)\b/i.test(prompt)
+            const isInvoiceEmail = isInvoiceQuery && /\b(email|send|mail|deliver|share)\b/i.test(prompt)
+            if (isInvoiceQuery) {
+                if (isInvoiceCreation) components.push('InvoiceBuilder')
                 else components.push('InvoiceList')
             }
             if (/\b(client|clients)\b/i.test(prompt)) components.push('ClientTable')
@@ -612,12 +716,39 @@ Generate 6-8 commands. Good examples:
             if (/\b(paid)\b/i.test(prompt)) filters.status = 'paid'
             else if (/\b(overdue|unpaid|due|pending)\b/i.test(prompt)) filters.status = 'overdue'
 
+            const invoiceData: AriaResponse['invoiceData'] = {}
+            if (isInvoiceCreation) {
+                const clientMatch = prompt.match(/(?:for|to)\s+([A-Z][a-zA-Z0-9 &]+)/i)
+                const amountMatch = prompt.match(/\$?([0-9]+(?:\.[0-9]{1,2})?)/)
+                if (clientMatch?.[1]) invoiceData.clientName = clientMatch[1].trim()
+                if (amountMatch?.[1]) invoiceData.amount = Number(amountMatch[1])
+                if (!invoiceData.clientName || !invoiceData.amount) {
+                    return Response.json({
+                        reply: "Who is the invoice for, and what amount should I use?",
+                        changeUI: false,
+                        action: 'none',
+                    } satisfies AriaResponse)
+                }
+            }
+            if (isInvoiceEmail) {
+                const invoiceNumberMatch = prompt.match(/invoice\s+(INV[-\dA-Z]*)/i)
+                const clientMatch = prompt.match(/(?:for|to)\s+([A-Z][a-zA-Z0-9 &]+)/i)
+                if (invoiceNumberMatch?.[1]) invoiceData.invoiceNumber = invoiceNumberMatch[1].trim()
+                if (clientMatch?.[1]) invoiceData.clientName = clientMatch[1].trim()
+                return Response.json({
+                    reply: "Which invoice should I send, and who should receive it?",
+                    changeUI: false,
+                    action: 'none',
+                } satisfies AriaResponse)
+            }
+
             return Response.json({
                 reply: "Let me pull that up for you! 📊",
                 changeUI: true,
                 components,
                 filters,
                 action: 'none',
+                invoiceData: Object.keys(invoiceData).length > 0 ? invoiceData : undefined,
             } satisfies AriaResponse)
         }
 
@@ -625,6 +756,13 @@ Generate 6-8 commands. Good examples:
         if (calendarPattern.test(prompt)) {
             const isCancel = /\b(cancel|remove|delete|clear|wipe|drop)\b/i.test(prompt);
             const isCreate = /\b(schedule|book|set up|arrange|create|add|new)\b/i.test(prompt);
+            if (isCancel || isCreate) {
+                return Response.json({
+                    reply: isCancel ? "Which meeting should I cancel?" : "Who should I schedule it with, and when?",
+                    changeUI: false,
+                    action: 'none',
+                } satisfies AriaResponse);
+            }
             return Response.json({
                 reply: isCancel ? "Let me open the calendar for that." : isCreate ? "Opening the calendar to schedule that!" : "Here's your calendar 📅",
                 changeUI: true,

@@ -6,18 +6,27 @@ import { useTimerStore } from "@/lib/timer-store";
 import { useEffect } from "react";
 
 export function Navbar() {
-  const { activeEntry, elapsed, isRunning, syncWithServer, stopTimer } =
-    useTimerStore();
+  const activeEntry = useTimerStore((s) => s.activeEntry);
+  const elapsed = useTimerStore((s) => s.elapsed);
+  const isRunning = useTimerStore((s) => s.isRunning);
+  const syncWithServer = useTimerStore((s) => s.syncWithServer);
+  const stopTimer = useTimerStore((s) => s.stopTimer);
 
   useEffect(() => {
     syncWithServer();
-    const interval = setInterval(syncWithServer, 30000);
+
+    const interval = window.setInterval(() => {
+      syncWithServer();
+    }, 30000);
+
     const onVisible = () => {
       if (document.visibilityState === "visible") syncWithServer();
     };
+
     document.addEventListener("visibilitychange", onVisible);
+
     return () => {
-      clearInterval(interval);
+      window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [syncWithServer]);
@@ -46,12 +55,12 @@ export function Navbar() {
   }
 
   return (
-    <motion.header
-      initial={{ y: -16, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      transition={{ duration: 0.3, ease: "easeOut" }}
-      className="fixed px-2 top-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-3xl"
-    >
+      <motion.header
+          initial={{ y: -16, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ duration: 0.3, ease: "easeOut" }}
+          className="fixed px-2 top-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-3xl"
+      >
       <div className="flex items-center justify-between px-4 py-2.5 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-xl border border-zinc-200/70 dark:border-zinc-700/70 rounded-2xl shadow-sm shadow-zinc-200/50 dark:shadow-zinc-900/50">
         {/* Brand */}
         <div className="flex items-center gap-2.5">

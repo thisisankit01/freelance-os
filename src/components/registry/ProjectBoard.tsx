@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, type DragEvent } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/lib/supabase";
 import { useUser } from "@clerk/nextjs";
-import { Pencil, X, Calendar, DollarSign, User, FileText } from "lucide-react";
+import { Pencil, X, Calendar, DollarSign, User, FileText, Sparkles } from "lucide-react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -78,6 +78,7 @@ export function ProjectBoard() {
     status: "",
   });
   const [savingEdit, setSavingEdit] = useState(false);
+  const [polishing, setPolishing] = useState<"new" | "edit" | null>(null);
   const prevEditId = useRef<string | null>(null);
 
   // Derive editing project from URL param
@@ -241,6 +242,31 @@ export function ProjectBoard() {
     }
   }
 
+  async function polishProjectDescription(mode: "new" | "edit") {
+    const source = mode === "new" ? newProject : editForm;
+    const title = source.title.trim() || editingProject?.title || "Untitled project";
+    const client = clients.find((c) => c.id === source.client_id)?.name;
+    setPolishing(mode);
+    const res = await fetch("/api/ai-polish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        field: "project description",
+        text: source.description,
+        context: `Project: ${title}\nClient: ${client || "Not assigned"}\nBudget: ${source.budget || "Not set"}\nDeadline: ${source.deadline || "Not set"}`,
+      }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (res.ok && typeof json.text === "string") {
+      if (mode === "new") {
+        setNewProject((p) => ({ ...p, description: json.text }));
+      } else {
+        setEditForm((p) => ({ ...p, description: json.text }));
+      }
+    }
+    setPolishing(null);
+  }
+
   function onProjectDragStart(e: DragEvent, projectId: string) {
     e.dataTransfer.setData("text/soloos-project-id", projectId);
     e.dataTransfer.effectAllowed = "move";
@@ -300,7 +326,8 @@ export function ProjectBoard() {
         </div>
 
         <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-3">
-          Drag cards between columns or use chat commands like{" "}
+          Drag cards between columns on desktop, use the mobile dropdown below,
+          or use chat commands like{" "}
           <span className="font-medium text-zinc-600 dark:text-zinc-300">
             edit project [name]
           </span>{" "}
@@ -334,15 +361,26 @@ export function ProjectBoard() {
                 }
                 className="w-full text-sm border dark:border-zinc-700 dark:bg-zinc-950 rounded-lg px-3 py-2"
               />
-              <textarea
-                placeholder="Description"
-                value={newProject.description}
-                rows={2}
-                onChange={(e) =>
-                  setNewProject((p) => ({ ...p, description: e.target.value }))
-                }
-                className="w-full text-sm border dark:border-zinc-700 dark:bg-zinc-950 rounded-lg px-3 py-2"
-              />
+              <div className="relative">
+                <textarea
+                  placeholder="Write a short project brief"
+                  value={newProject.description}
+                  rows={3}
+                  onChange={(e) =>
+                    setNewProject((p) => ({ ...p, description: e.target.value }))
+                  }
+                  className="w-full text-sm border dark:border-zinc-700 dark:bg-zinc-950 rounded-lg pl-3 pr-12 py-2"
+                />
+                <button
+                  type="button"
+                  onClick={() => polishProjectDescription("new")}
+                  disabled={polishing === "new"}
+                  className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-md border border-violet-300 bg-white text-violet-600 hover:bg-violet-50 dark:bg-zinc-950 dark:border-violet-800 dark:text-violet-300 disabled:opacity-60"
+                  title="Improve with AI"
+                >
+                  <Sparkles className="h-4 w-4" />
+                </button>
+              </div>
               <div className="flex gap-2">
                 <input
                   type="number"
@@ -378,7 +416,7 @@ export function ProjectBoard() {
               </select>
               <button
                 type="submit"
-                className="w-full text-sm bg-violet-600 text-white py-2 rounded-lg hover:bg-violet-700"
+                className="text-xs bg-violet-600 text-white px-3 py-1.5 rounded-lg hover:bg-violet-700"
               >
                 Create Project
               </button>
@@ -465,6 +503,21 @@ export function ProjectBoard() {
                         {new Date(project.deadline).toLocaleDateString("en-IN")}
                       </p>
                     ) : null}
+
+                    <div className="mt-3">
+                      <label className="sr-only">Project status</label>
+                      <select
+                        value={project.status}
+                        onChange={(e) => moveStatus(project.id, e.target.value)}
+                        className="w-full text-[11px] border border-zinc-200 dark:border-zinc-700 rounded-lg px-2 py-2 bg-white dark:bg-zinc-950 text-zinc-700 dark:text-zinc-300"
+                      >
+                        {statuses.map((option) => (
+                          <option key={option} value={option}>
+                            {STATUS_LABELS[option]}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 ))}
             </div>
@@ -540,17 +593,29 @@ export function ProjectBoard() {
                   <label className="flex items-center gap-1.5 text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1.5">
                     Description
                   </label>
-                  <textarea
-                    value={editForm.description}
-                    onChange={(e) =>
-                      setEditForm((f) => ({
-                        ...f,
-                        description: e.target.value,
-                      }))
-                    }
-                    rows={2}
-                    className="w-full text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-2 bg-white dark:bg-zinc-950 text-zinc-800 dark:text-zinc-200 outline-none focus:ring-2 focus:ring-violet-500/30 focus:border-violet-400 transition-all resize-none"
-                  />
+                  <div className="relative">
+                    <textarea
+                      value={editForm.description}
+                      placeholder="Write a short project brief"
+                      onChange={(e) =>
+                        setEditForm((f) => ({
+                          ...f,
+                          description: e.target.value,
+                        }))
+                      }
+                      rows={4}
+                      className="w-full text-sm border border-zinc-200 dark:border-zinc-700 rounded-lg pl-3 pr-12 py-2 bg-white dark:bg-zinc-950 text-zinc-800 dark:text-zinc-200 outline-none focus:ring-2 focus:ring-violet-500/30 focus:border-violet-400 transition-all resize-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => polishProjectDescription("edit")}
+                      disabled={polishing === "edit"}
+                      className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-md border border-violet-300 bg-white text-violet-600 hover:bg-violet-50 dark:bg-zinc-950 dark:border-violet-800 dark:text-violet-300 disabled:opacity-60"
+                      title="Improve with AI"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
 
                 {/* Budget + Deadline */}
@@ -632,11 +697,11 @@ export function ProjectBoard() {
               </div>
 
               {/* Footer */}
-              <div className="px-5 pb-5 flex gap-2">
+              <div className="px-5 pb-5 flex gap-2 justify-end">
                 <button
                   onClick={saveEdit}
                   disabled={savingEdit || !editForm.title.trim()}
-                  className="flex-1 text-sm bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-xl font-medium transition-colors"
+                  className="text-xs bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg font-medium transition-colors"
                 >
                   {savingEdit ? (
                     <span className="flex items-center justify-center gap-2">
@@ -649,7 +714,7 @@ export function ProjectBoard() {
                 </button>
                 <button
                   onClick={closeEditModal}
-                  className="text-sm px-5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
+                  className="text-xs px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
                 >
                   Cancel
                 </button>

@@ -3,16 +3,17 @@ import { Resend } from "resend";
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 export async function POST(req: Request) {
-  const { to, subject, invoiceId, invoiceNumber, pdfBase64 } = await req.json();
+  const { to, subject, invoiceNumber, pdfBase64, html, text } = await req.json();
 
   try {
-    if (!pdfBase64) throw new Error("No PDF provided");
+    if (!to) throw new Error("Recipient email is required");
+    if (!pdfBase64 && !html && !text) throw new Error("No email content provided");
 
     const { data, error } = await resend.emails.send({
       from: "SoloOS <onboarding@resend.dev>",
       to: [to],
-      subject,
-      html: `
+      subject: subject || "Message from SoloOS",
+      html: html || `
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #7c3aed;">Invoice from SoloOS</h2>
           <p>Please find your invoice attached.</p>
@@ -21,12 +22,13 @@ export async function POST(req: Request) {
           <p style="color: #999; font-size: 12px;">Sent via SoloOS</p>
         </div>
       `,
-      attachments: [
+      text,
+      attachments: pdfBase64 ? [
         {
           filename: `${invoiceNumber}.pdf`,
           content: Buffer.from(pdfBase64, "base64"),
         },
-      ],
+      ] : undefined,
     });
 
     if (error) throw error;

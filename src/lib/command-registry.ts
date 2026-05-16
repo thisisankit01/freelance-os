@@ -47,6 +47,23 @@ export const STATIC_COMMANDS: CommandSuggestion[] = [
   { id: 'stop-timer', label: 'Stop timer', category: 'time', icon: '⏹️' },
   { id: 'time-entries', label: 'Show time entries', category: 'time', icon: '🕒' },
 
+  // Operations
+  { id: 'inventory', label: 'Show inventory', category: 'general', icon: '📦' },
+  { id: 'low-stock', label: 'Show low stock', category: 'general', icon: '⚠️' },
+  { id: 'add-expense', label: 'Add expense ...', category: 'general', icon: '🧾', requiresInput: true },
+  { id: 'profit-loss', label: 'Show profit and loss', category: 'general', icon: '📉' },
+  { id: 'team', label: 'Show team', category: 'general', icon: '👤' },
+  { id: 'payouts', label: 'Show payouts', category: 'general', icon: '💸' },
+  { id: 'assign-work', label: 'Assign task to ...', category: 'general', icon: '📌', requiresInput: true },
+  { id: 'invoice-templates', label: 'Show invoice templates', category: 'invoice', icon: '🎨' },
+  { id: 'template-message', label: 'Set invoice template message to ...', category: 'invoice', icon: '✉️', requiresInput: true },
+  { id: 'template-default', label: 'Make invoice template default ...', category: 'invoice', icon: '⭐', requiresInput: true },
+  { id: 'documents', label: 'Show contracts and legal notices', category: 'general', icon: '📄' },
+  { id: 'draft-contract', label: 'Draft contract for ...', category: 'general', icon: '📄', requiresInput: true },
+  { id: 'send-contract', label: 'Send contract to ...', category: 'general', icon: '📤', requiresInput: true },
+  { id: 'send-legal-notice', label: 'Send legal notice to ...', category: 'general', icon: '⚖️', requiresInput: true },
+  { id: 'payment-links', label: 'Show payment links', category: 'payment', icon: '🔗' },
+
   // Payments / Stats
   { id: 'who-owes', label: 'Who hasn\'t paid me?', category: 'payment', icon: '💸' },
   { id: 'payment-status', label: 'Show payment status', category: 'payment', icon: '💳' },

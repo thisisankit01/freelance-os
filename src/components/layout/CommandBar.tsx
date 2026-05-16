@@ -25,6 +25,11 @@ import {
   useCommandSuggestions,
   type ScoredSuggestion,
 } from "@/lib/use-command-suggestions";
+import { parsePmCommandWithAi } from "@/lib/pm-ai-intent-client";
+import {
+  guardUnsafeOrUnsupportedIntent,
+  shouldAskInsteadOfUiFallback,
+} from "@/lib/safety-intent-guard";
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -37,27 +42,137 @@ type WorkspaceChip = { label: string; payload: string };
 
 function pmCommandSoloLayout(
   kind: ParsedPmCommand["kind"],
-): "ProjectBoard" | "TaskBoard" | null {
+):
+  | "ProjectBoard"
+  | "TaskBoard"
+  | "ClientTable"
+  | "InvoiceBuilder"
+  | "InvoiceList"
+  | "ReminderSender"
+  | "ProjectProfit"
+  | "InventoryGrid"
+  | "ExpenseTracker"
+  | "ProfitLoss"
+  | "TeamTable"
+  | "PayoutTracker"
+  | "WorkAssignment"
+  | "InvoiceTemplateEditor"
+  | "AiDocumentCenter"
+  | "PaymentLinks"
+  | null {
   switch (kind) {
     case "list_projects":
+    case "behind_schedule_projects":
     case "create_project":
     case "rename_project":
     case "delete_project":
     case "set_project_status":
+    case "open_project_editor":
+    case "update_project":
       return "ProjectBoard";
+    case "show_project_profit":
+      return "ProjectProfit";
     case "show_tasks":
     case "filter_tasks_status":
     case "clear_filters":
     case "add_task":
     case "mark_task":
     case "mark_task_by_id":
+    case "update_task":
     case "delete_task":
     case "delete_task_by_id":
     case "mark_all_tasks":
       return "TaskBoard";
+    case "list_clients":
+      return "ClientTable";
+    case "list_invoices":
+    case "show_invoice":
+    case "mark_invoice_status":
+    case "create_invoice":
+    case "email_invoice":
+      return kind === "create_invoice" ? "InvoiceBuilder" : "InvoiceList";
+    case "send_reminder":
+      return "ReminderSender";
+    case "list_inventory":
+    case "add_inventory":
+    case "update_inventory_quantity":
+      return "InventoryGrid";
+    case "list_expenses":
+    case "add_expense":
+      return "ExpenseTracker";
+    case "show_profit_loss":
+      return "ProfitLoss";
+    case "list_team":
+    case "add_team_member":
+      return "TeamTable";
+    case "list_payouts":
+    case "add_payout":
+      return "PayoutTracker";
+    case "list_assignments":
+    case "assign_work":
+      return "WorkAssignment";
+    case "list_invoice_templates":
+    case "create_invoice_template":
+    case "update_invoice_template":
+      return "InvoiceTemplateEditor";
+    case "list_documents":
+    case "draft_contract":
+    case "draft_legal_notice":
+    case "send_document":
+      return "AiDocumentCenter";
+    case "list_payment_links":
+    case "create_payment_link":
+      return "PaymentLinks";
     default:
       return null;
   }
+}
+
+function needsWorkspaceClarification(input: string) {
+  const t = input.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!t) return false;
+
+  const actionish =
+    /\b(add|create|make|generate|send|email|mail|share|delete|remove|cancel|move|set|mark|finish|complete|close|start|stop|track|bill|charge|collect|pay|update|change)\b/.test(
+      t,
+    );
+  const workspaceish =
+    /\b(project|task|todo|client|invoice|bill|payment|meeting|appointment|calendar|timer|legal|contract|agreement|whatsapp|razorpay|upi)\b/.test(
+      t,
+    );
+
+  return actionish && workspaceish;
+}
+
+function inferClarificationSlot(reply: string): "project" | "client" | "invoice" | "amount" | "recipient" | "detail" {
+  const t = reply.toLowerCase();
+  if (/\bproject\b/.test(t)) return "project";
+  if (/\bclient|customer\b/.test(t)) return "client";
+  if (/\binvoice\b/.test(t)) return "invoice";
+  if (/\bamount|price|rate|budget\b/.test(t)) return "amount";
+  if (/\brecipient|email|send to\b/.test(t)) return "recipient";
+  return "detail";
+}
+
+function isShortClarificationAnswer(input: string) {
+  const t = input.trim();
+  if (!t) return false;
+  if (/[?.!]/.test(t)) return false;
+  if (/\b(add|create|make|generate|send|email|delete|remove|move|set|mark|start|stop|show|list|open|draft)\b/i.test(t)) return false;
+  return t.split(/\s+/).length <= 6;
+}
+
+function applyClarificationAnswer(originalPrompt: string, slot: ReturnType<typeof inferClarificationSlot>, answer: string) {
+  const clean = answer.trim();
+  if (slot === "project") {
+    if (/\b(task|todo|item)\b/i.test(originalPrompt)) return `${originalPrompt} to ${clean}`;
+    return `${originalPrompt} project ${clean}`;
+  }
+  if (slot === "client") return `${originalPrompt} for ${clean}`;
+  if (slot === "invoice") return `${originalPrompt} invoice ${clean}`;
+  if (slot === "amount") return `${originalPrompt} ${clean}`;
+  if (slot === "recipient") return `${originalPrompt} to ${clean}`;
+  return `${originalPrompt} ${clean}`;
 }
 
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
@@ -81,11 +196,11 @@ export function CommandBar({
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [ignoreClicksUntil, setIgnoreClicksUntil] = useState(0);
 
-  // Entity data for AI hints + live search
   const [entityRows, setEntityRows] = useState<{
     projects: { id: string; title: string }[];
+    tasks: { id: string; title: string }[];
     clients: { id: string; name: string }[];
-  }>({ projects: [], clients: [] });
+  }>({ projects: [], tasks: [], clients: [] });
 
   const inputRef = useRef<HTMLInputElement>(null);
   const recRef = useRef<MediaRecorder | null>(null);
@@ -129,19 +244,28 @@ export function CommandBar({
 
   // Load entity data when dock opens (for AI hints + live entity matching)
   useEffect(() => {
-    if (!dockOpen) return;
+    if (!dockOpen || !user?.id) return;
     let cancelled = false;
 
     const run = async () => {
       try {
-        const entRes = await fetch("/api/command-suggestions");
+        const [entRes, taskRes] = await Promise.all([
+          fetch("/api/command-suggestions"),
+          fetch("/api/tasks"),
+        ]);
+
         const entJson = await entRes.json().catch(() => ({}));
+        const taskJson = await taskRes.json().catch(() => ({}));
+
         if (cancelled) return;
+
         const projects = Array.isArray(entJson.projects)
-          ? entJson.projects
-          : [];
+            ? entJson.projects
+            : [];
         const clients = Array.isArray(entJson.clients) ? entJson.clients : [];
-        setEntityRows({ projects, clients });
+        const tasks = Array.isArray(taskJson.data) ? taskJson.data : [];
+
+        setEntityRows({ projects, tasks, clients });
 
         // Refresh AI hints with real entity names
         refreshHints({
@@ -149,7 +273,7 @@ export function CommandBar({
           projects: projects.map((p: { title: string }) => p.title),
           clients: clients.map((c: { name: string }) => c.name),
         });
-      } catch {
+      }catch {
         // Silently fail — static suggestions still work
       }
     };
@@ -158,7 +282,9 @@ export function CommandBar({
     return () => {
       cancelled = true;
     };
-  }, [dockOpen, workspaceMode, refreshHints]);
+
+  }, [dockOpen, workspaceMode, refreshHints, user?.id]);
+
 
   // Reset selection when suggestions change or dock closes
   useEffect(() => {
@@ -176,8 +302,22 @@ export function CommandBar({
 
   const handleSubmit = useCallback(
     async (prompt: string) => {
-      const trimmed = prompt.trim();
+      let trimmed = prompt.trim();
       if (!trimmed || loading) return;
+
+      const pendingClarification = usePmChatStore.getState().pendingClarification;
+      if (
+        pendingClarification &&
+        Date.now() - pendingClarification.createdAt < 3 * 60 * 1000 &&
+        isShortClarificationAnswer(trimmed)
+      ) {
+        trimmed = applyClarificationAnswer(
+          pendingClarification.originalPrompt,
+          pendingClarification.slot,
+          trimmed,
+        );
+        usePmChatStore.getState().setPendingClarification(null);
+      }
 
       setDockOpen(false);
       setWorkspaceChips(null);
@@ -185,18 +325,13 @@ export function CommandBar({
       setInput("");
 
       try {
-        let parsed = parsePmCommand(trimmed);
-        if (
-          parsed &&
-          (parsed.kind === "confirm_yes" || parsed.kind === "confirm_no") &&
-          !usePmChatStore.getState().pendingConfirm &&
-          !workspaceMode
-        ) {
-          parsed = null;
-        }
-
-        if (parsed) {
+        const executePmCommand = async (parsed: ParsedPmCommand) => {
           setAiMessage("Working…");
+          const soloBefore = pmCommandSoloLayout(parsed.kind);
+          if (soloBefore) {
+            setComponents([soloBefore]);
+            await new Promise((resolve) => setTimeout(resolve, 40));
+          }
           if (
             !trimmed.startsWith("__pm:") &&
             parsed.kind !== "confirm_yes" &&
@@ -205,6 +340,7 @@ export function CommandBar({
           ) {
             usePmChatStore.getState().setPendingConfirm(null);
           }
+          usePmChatStore.getState().setPendingClarification(null);
           usePmChatStore.getState().addUserMessage(trimmed);
           try {
             const result = await runPmCommand(parsed);
@@ -224,8 +360,6 @@ export function CommandBar({
               result.chips && result.chips.length > 0 ? result.chips : null,
             );
             setTimeout(() => setAiMessage(""), 6000);
-            const solo = pmCommandSoloLayout(parsed.kind);
-            if (solo) setComponents([solo]);
           } catch (e) {
             const msg = e instanceof Error ? e.message : "error";
             usePmChatStore
@@ -234,6 +368,102 @@ export function CommandBar({
             setAiMessage("Workspace command failed");
             setTimeout(() => setAiMessage(""), 4000);
           }
+        };
+
+        const guarded = guardUnsafeOrUnsupportedIntent(trimmed);
+
+        if (guarded.blocked) {
+          usePmChatStore.getState().addUserMessage(trimmed);
+          usePmChatStore.getState().addAssistantMessage(
+              guarded.reply,
+              guarded.chips,
+          );
+          setAiMessage(guarded.reply);
+          setWorkspaceChips(
+              guarded.chips && guarded.chips.length > 0 ? guarded.chips : null,
+          );
+          setTimeout(() => setAiMessage(""), 7000);
+          return;
+        }
+        let parsed = parsePmCommand(trimmed);
+
+        if (!parsed) {
+          setAiMessage("Checking…");
+          const aiParsed = await parsePmCommandWithAi(trimmed, entityRows);
+
+          if (aiParsed.type === "clarify") {
+            usePmChatStore.getState().addUserMessage(trimmed);
+            usePmChatStore.getState().addAssistantMessage(
+              aiParsed.reply,
+              aiParsed.chips,
+            );
+            usePmChatStore.getState().setPendingClarification({
+              originalPrompt: trimmed,
+              slot: inferClarificationSlot(aiParsed.reply),
+              createdAt: Date.now(),
+            });
+            setAiMessage(aiParsed.reply);
+            setWorkspaceChips(
+              aiParsed.chips && aiParsed.chips.length > 0
+                ? aiParsed.chips
+                : null,
+            );
+            setTimeout(() => setAiMessage(""), 7000);
+            return;
+          }
+
+          if (aiParsed.type === "command") {
+            parsed = aiParsed.command;
+          } else {
+            const askInstead = shouldAskInsteadOfUiFallback(trimmed);
+            if (!askInstead.shouldAsk && !needsWorkspaceClarification(trimmed)) {
+              // Low-risk navigation can continue to Aria. Serious or vague actions stop here.
+            } else {
+              const reply = askInstead.shouldAsk
+                ? askInstead.reply
+                : "I’m not sure which workspace action to run. Please mention the exact project, task, client, invoice, or recipient.";
+              const chips = askInstead.shouldAsk ? askInstead.chips : undefined;
+              usePmChatStore.getState().addUserMessage(trimmed);
+              usePmChatStore.getState().addAssistantMessage(reply, chips);
+              usePmChatStore.getState().setPendingClarification({
+                originalPrompt: trimmed,
+                slot: inferClarificationSlot(reply),
+                createdAt: Date.now(),
+              });
+              setAiMessage(reply);
+              setWorkspaceChips(
+                chips && chips.length > 0 ? chips : null,
+              );
+              setTimeout(() => setAiMessage(""), 7000);
+              return;
+            }
+          }
+        }
+
+        if (parsed) {
+          await executePmCommand(parsed);
+          return;
+        }
+
+        const askInstead = shouldAskInsteadOfUiFallback(trimmed);
+        if (askInstead.shouldAsk) {
+          usePmChatStore.getState().addUserMessage(trimmed);
+          usePmChatStore.getState().addAssistantMessage(
+            askInstead.reply,
+            askInstead.chips,
+          );
+          usePmChatStore.getState().setPendingClarification({
+            originalPrompt: trimmed,
+            slot: inferClarificationSlot(askInstead.reply),
+            createdAt: Date.now(),
+          });
+          setAiMessage(askInstead.reply);
+          setWorkspaceChips(
+            askInstead.chips && askInstead.chips.length > 0
+              ? askInstead.chips
+              : null,
+          );
+          setTimeout(() => setAiMessage(""), 7000);
           return;
         }
 
@@ -262,6 +492,7 @@ export function CommandBar({
           emptyMessage?: string;
           action?: string;
           appointmentData?: Record<string, unknown>;
+          invoiceData?: Record<string, unknown>;
         };
 
         let pmRecoveredReply: string | null = null;
@@ -325,16 +556,42 @@ export function CommandBar({
           if (data.emptyMessage) setEmptyMessage(data.emptyMessage);
         }
 
+        if (data.action === "edit_project") {
+          if (!(data.components ?? []).includes("ProjectBoard")) {
+            setComponents(["ProjectBoard", ...(data.components ?? [])]);
+          }
+          const projectDataCandidate = (data as { projectData?: unknown })
+            .projectData;
+          const projectTitle =
+            projectDataCandidate &&
+            typeof projectDataCandidate === "object" &&
+            typeof (projectDataCandidate as { title?: unknown }).title ===
+              "string"
+              ? (projectDataCandidate as { title: string }).title
+              : null;
+          if (projectTitle) {
+            setTimeout(() => {
+              window.dispatchEvent(
+                new CustomEvent("soloos:edit-project", {
+                  detail: { title: projectTitle },
+                }),
+              );
+            }, 60);
+          }
+        }
+
         const APPOINTMENT_ACTIONS = new Set([
           "create_appointment",
           "create_appointments_bulk",
           "cancel_appointment",
           "cancel_appointments_bulk",
         ]);
+        const INVOICE_ACTIONS = new Set(["create_invoice", "email_invoice"]);
         const isAppointmentMutation = Boolean(
           user?.id && data.action && APPOINTMENT_ACTIONS.has(data.action),
         );
 
+        let actionHandled = false;
         let exec = null as Awaited<ReturnType<typeof runAppointmentAiAction>>;
         if (isAppointmentMutation) {
           exec = await runAppointmentAiAction({
@@ -357,6 +614,117 @@ export function CommandBar({
           );
         }
 
+        if (user?.id && data.action && INVOICE_ACTIONS.has(data.action)) {
+          actionHandled = true;
+          try {
+            const { createInvoiceViaAi, emailInvoiceViaAi } =
+              await import("@/lib/invoice-ai-actions");
+            if (data.action === "create_invoice") {
+              const invData = data.invoiceData as
+                | Record<string, unknown>
+                | undefined;
+              const clientName =
+                invData && typeof invData.clientName === "string"
+                  ? invData.clientName
+                  : undefined;
+              const amount =
+                invData && typeof invData.amount === "number"
+                  ? invData.amount
+                  : undefined;
+              const description =
+                invData && typeof invData.description === "string"
+                  ? invData.description
+                  : undefined;
+              if (!clientName) {
+                setAiMessage("Need a client name to create the invoice.");
+              } else {
+                const result = await createInvoiceViaAi({
+                  clientName,
+                  amount,
+                  description,
+                });
+                if (result.ok) {
+                  window.dispatchEvent(new Event("soloos:pm-refresh"));
+                  setAiMessage(result.message);
+                } else {
+                  setAiMessage(result.message);
+                }
+              }
+            } else if (data.action === "email_invoice") {
+              const invData = data.invoiceData as
+                | Record<string, unknown>
+                | undefined;
+              const invoiceNumber =
+                invData && typeof invData.invoiceNumber === "string"
+                  ? invData.invoiceNumber
+                  : undefined;
+              const clientName =
+                invData && typeof invData.clientName === "string"
+                  ? invData.clientName
+                  : undefined;
+              const freelancerName =
+                user?.fullName ||
+                `${user?.firstName ?? ""} ${user?.lastName ?? ""}`.trim() ||
+                "SoloOS";
+              const freelancerEmail =
+                user?.emailAddresses?.[0]?.emailAddress || "billing@soloos.app";
+              const result = await emailInvoiceViaAi({
+                invoiceNumber,
+                clientName,
+                freelancerName,
+                freelancerEmail,
+              });
+              if (result.ok) {
+                setAiMessage(result.message);
+              } else {
+                setAiMessage(result.message);
+              }
+            }
+          } catch {
+            setAiMessage("Invoice action failed");
+          }
+          setTimeout(() => setAiMessage(""), 2500);
+        }
+
+        // Timer actions (chat-driven start/stop)
+        const TIMER_ACTIONS = new Set(["start_timer", "stop_timer"]);
+        if (user?.id && data.action && TIMER_ACTIONS.has(data.action)) {
+          actionHandled = true;
+          try {
+            // Import centralized timer helpers
+            const { startTimerViaAi, stopTimerViaAi } =
+              await import("@/lib/timer-ai-actions");
+            if (data.action === "start_timer") {
+              const td = data.appointmentData as
+                | Record<string, unknown>
+                | undefined;
+              const taskId =
+                td && typeof td.taskId === "string" ? td.taskId : undefined;
+              const taskName =
+                td && typeof td.taskName === "string" ? td.taskName : undefined;
+              const result = await startTimerViaAi({ taskId, taskName });
+              if (result.ok) {
+                window.dispatchEvent(new Event("soloos:time-refresh"));
+                setAiMessage("Started timer");
+              } else {
+                setAiMessage(result.message || "Could not start timer");
+              }
+            } else if (data.action === "stop_timer") {
+              const result = await stopTimerViaAi();
+              if (result.ok) {
+                window.dispatchEvent(new Event("soloos:time-refresh"));
+                setAiMessage("Stopped timer");
+              } else {
+                setAiMessage(result.message || "Could not stop timer");
+              }
+            }
+            setTimeout(() => setAiMessage(""), 2500);
+          } catch {
+            setAiMessage("Timer action failed");
+            setTimeout(() => setAiMessage(""), 2500);
+          }
+        }
+
         const base = typeof data.reply === "string" ? data.reply : "Done";
         if (exec) {
           setAiMessage(
@@ -366,7 +734,7 @@ export function CommandBar({
         } else if (pmRecoveredReply) {
           setAiMessage(pmRecoveredReply);
           setTimeout(() => setAiMessage(""), 6000);
-        } else {
+        } else if (!actionHandled) {
           setAiMessage(base);
           setTimeout(() => setAiMessage(""), 2500);
         }
@@ -380,7 +748,7 @@ export function CommandBar({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [loading, workspaceMode, filters, user],
+    [loading, workspaceMode, filters, user, entityRows],
   );
 
   useEffect(() => {

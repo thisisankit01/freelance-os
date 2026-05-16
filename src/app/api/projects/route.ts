@@ -50,15 +50,24 @@ export async function PATCH(req: Request) {
   if (!userId) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { id, ...updates } = await req.json()
-  if (updates.status === 'done') updates.completed_at = new Date().toISOString()
+
+  if (!id) {
+    return Response.json({ error: 'id is required' }, { status: 400 })
+  }
+
+  if (updates.status === 'done') {
+    updates.completed_at = new Date().toISOString()
+  } else if (typeof updates.status === 'string') {
+    updates.completed_at = null
+  }
 
   const { data, error } = await supabaseAdmin
-    .from('projects')
-    .update(updates)
-    .eq('id', id)
-    .eq('user_id', userId)
-    .select()
-    .single()
+      .from('projects')
+      .update(updates)
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select()
+      .single()
 
   if (error) return Response.json({ error: error.message }, { status: 500 })
   return Response.json({ data })

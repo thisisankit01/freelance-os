@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
+import { Pencil } from "lucide-react";
 import { useUser } from "@clerk/nextjs";
 import {
   isThisWeek,
@@ -335,7 +336,7 @@ export function TaskBoard({
           </div>
           <button
             type="submit"
-            className="w-full text-sm bg-violet-600 text-white py-2 rounded-lg hover:bg-violet-700"
+            className="text-xs bg-violet-600 text-white px-3 py-1.5 rounded-lg hover:bg-violet-700"
           >
             Add Task
           </button>
@@ -392,7 +393,7 @@ export function TaskBoard({
                 <div className="flex gap-2">
                   <button
                     onClick={() => saveEdit(task.id)}
-                    className="text-xs bg-violet-600 text-white px-3 py-1 rounded-lg font-medium hover:bg-violet-700 transition-colors"
+                    className="text-xs bg-violet-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-violet-700 transition-colors"
                   >
                     Save
                   </button>
@@ -428,9 +429,10 @@ export function TaskBoard({
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     onClick={() => startEdit(task)}
-                    className="text-[10px] text-zinc-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors font-medium"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-violet-200 text-violet-700 hover:bg-violet-50 dark:border-violet-900 dark:text-violet-300 dark:hover:bg-violet-950/40 transition-colors"
+                    title="Edit task"
                   >
-                    ✎
+                    <Pencil className="h-4 w-4" />
                   </button>
                   <span
                     className={`text-[10px] px-2 py-0.5 rounded-full ${task.status === "done" ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400" : task.status === "in_progress" ? "bg-amber-50 text-amber-600 dark:bg-amber-950 dark:text-amber-400" : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"}`}
