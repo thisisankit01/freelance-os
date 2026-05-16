@@ -776,6 +776,18 @@ export function CommandBar({
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
 
+  useEffect(() => {
+    const onRunCommand = (event: Event) => {
+      const prompt = (event as CustomEvent<{ prompt?: string }>).detail?.prompt;
+      if (typeof prompt === "string" && prompt.trim()) {
+        void handleSubmitRef.current(prompt);
+      }
+    };
+
+    window.addEventListener("soloos:run-command", onRunCommand);
+    return () => window.removeEventListener("soloos:run-command", onRunCommand);
+  }, []);
+
   // Press "/" or Ctrl/Cmd+K anywhere to focus
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
