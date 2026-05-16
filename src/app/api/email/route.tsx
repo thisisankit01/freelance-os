@@ -1,17 +1,24 @@
 import { Resend } from "resend";
+import { auth } from "@clerk/nextjs/server";
+import { getClerkUserEmail, SOLOOS_FROM_EMAIL, uniqueRecipients } from "@/lib/email-delivery";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 export async function POST(req: Request) {
+  const { userId } = await auth();
+  if (!userId) return Response.json({ error: "Unauthorized" }, { status: 401 });
+
   const { to, subject, invoiceNumber, pdfBase64, html, text } = await req.json();
 
   try {
     if (!to) throw new Error("Recipient email is required");
     if (!pdfBase64 && !html && !text) throw new Error("No email content provided");
+    const userEmail = await getClerkUserEmail(userId);
+    const recipients = uniqueRecipients(to, userEmail);
 
     const { data, error } = await resend.emails.send({
-      from: "SoloOS <onboarding@resend.dev>",
-      to: [to],
+      from: SOLOOS_FROM_EMAIL,
+      to: recipients,
       subject: subject || "Message from SoloOS",
       html: html || `
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">

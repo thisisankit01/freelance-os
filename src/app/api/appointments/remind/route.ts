@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin'
 import { auth } from '@clerk/nextjs/server'
 import { Resend } from 'resend'
+import { getClerkUserEmail, SOLOOS_FROM_EMAIL, uniqueRecipients } from '@/lib/email-delivery'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
@@ -25,11 +26,13 @@ export async function POST(req: Request) {
     const start = new Date(appt.start_time)
     const dateStr = start.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
     const timeStr = start.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+    const userEmail = await getClerkUserEmail(userId)
+    const recipients = uniqueRecipients(appt.clients.email, userEmail)
 
     try {
         await resend.emails.send({
-            from: 'SoloOS <onboarding@resend.dev>',
-            to: [appt.clients.email],
+            from: SOLOOS_FROM_EMAIL,
+            to: recipients,
             subject: `⏰ Reminder: ${appt.title} — ${dateStr}`,
             html: `
                 <div style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto;">

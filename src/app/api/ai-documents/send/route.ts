@@ -3,6 +3,7 @@ import { Resend } from 'resend'
 import { supabaseAdmin } from '@/lib/supabase-admin'
 import React from 'react'
 import { Document, Page, StyleSheet, Text, View, renderToBuffer } from '@react-pdf/renderer'
+import { getClerkUserEmail, SOLOOS_FROM_EMAIL, uniqueRecipients } from '@/lib/email-delivery'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
@@ -87,6 +88,8 @@ export async function POST(req: Request) {
   if (!recipient) {
     return Response.json({ error: 'Recipient email is missing' }, { status: 400 })
   }
+  const userEmail = await getClerkUserEmail(userId)
+  const recipients = uniqueRecipients(recipient, userEmail)
 
   const title = String(doc.title || 'Document')
   const label = doc.document_type === 'legal_notice' ? 'Legal notice' : 'Contract'
@@ -104,8 +107,8 @@ export async function POST(req: Request) {
       : `Please find attached the contract document for review. The attached PDF contains the project terms, scope, and commercial details.`
 
   const { data, error: sendError } = await resend.emails.send({
-    from: 'SoloOS <onboarding@resend.dev>',
-    to: [recipient],
+    from: SOLOOS_FROM_EMAIL,
+    to: recipients,
     subject: `${label}: ${title}`,
     html: `
       <div style="font-family:Arial,sans-serif;max-width:680px;margin:0 auto;color:#18181b;line-height:1.55;">

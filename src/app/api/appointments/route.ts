@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin'
 import { auth } from '@clerk/nextjs/server'
 import { Resend } from 'resend'
+import { getClerkUserEmail, SOLOOS_FROM_EMAIL, SOLOOS_RAW_EMAIL, uniqueRecipients } from '@/lib/email-delivery'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
@@ -150,7 +151,7 @@ export async function POST(req: Request) {
 
         // Send calendar invite email to client (fire-and-forget, don't block response)
         if (clientId && data) {
-            sendCalendarInvite(data.id, clientId, title, start, end, notes).catch(console.error)
+            sendCalendarInvite(userId, data.id, clientId, title, start, end, notes).catch(console.error)
         }
 
         return Response.json({ data, emailSent: !!clientId })
@@ -208,7 +209,7 @@ export async function POST(req: Request) {
             if (error) continue
             createdCount++
             if (resolvedClientId && data) {
-                sendCalendarInvite(data.id, resolvedClientId, title, start, end, m.notes ?? undefined).catch(console.error)
+                sendCalendarInvite(userId, data.id, resolvedClientId, title, start, end, m.notes ?? undefined).catch(console.error)
             }
         }
 
@@ -479,6 +480,7 @@ export async function POST(req: Request) {
 
 // ── Send calendar invite email ──────────────────────────────────────────────
 async function sendCalendarInvite(
+    userId: string,
     appointmentId: string,
     clientId: string,
     title: string,
@@ -496,7 +498,8 @@ async function sendCalendarInvite(
     if (!client?.email) return // no email on file, skip silently
 
     // Look up organizer info (the freelancer)
-    const fromEmail = 'onboarding@resend.dev' // Resend free tier sender
+    const userEmail = await getClerkUserEmail(userId)
+    const recipients = uniqueRecipients(client.email, userEmail)
 
     const icsContent = generateICS({
         id: appointmentId,
@@ -504,15 +507,15 @@ async function sendCalendarInvite(
         start,
         end,
         description: notes || `Scheduled via SoloOS`,
-        organizerEmail: fromEmail,
+        organizerEmail: SOLOOS_RAW_EMAIL,
         attendeeEmail: client.email,
     })
 
     const icsBuffer = Buffer.from(icsContent, 'utf-8')
 
     await resend.emails.send({
-        from: `SoloOS <${fromEmail}>`,
-        to: [client.email],
+        from: SOLOOS_FROM_EMAIL,
+        to: recipients,
         subject: `📅 Meeting Invite: ${title}`,
         html: `
             <div style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto;">
