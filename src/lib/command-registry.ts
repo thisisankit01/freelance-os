@@ -34,6 +34,7 @@ export const STATIC_COMMANDS: CommandSuggestion[] = [
   { id: 'show-projects', label: 'Show projects', category: 'project', icon: '📊' },
   { id: 'new-project', label: 'New project ...', category: 'project', icon: '🆕', requiresInput: true },
   { id: 'project-profit', label: 'Show project profitability', category: 'project', icon: '💹' },
+  { id: 'project-insights', label: 'Show project insights and charts', category: 'project', icon: '📊' },
   { id: 'project-kanban', label: 'Open project board', category: 'project', icon: '📋' },
 
   // Tasks
@@ -52,6 +53,7 @@ export const STATIC_COMMANDS: CommandSuggestion[] = [
   { id: 'low-stock', label: 'Show low stock', category: 'general', icon: '⚠️' },
   { id: 'add-expense', label: 'Add expense ...', category: 'general', icon: '🧾', requiresInput: true },
   { id: 'profit-loss', label: 'Show profit and loss', category: 'general', icon: '📉' },
+  { id: 'financial-insights', label: 'Show financial insights and graphs', category: 'general', icon: '📊' },
   { id: 'team', label: 'Show team', category: 'general', icon: '👤' },
   { id: 'payouts', label: 'Show payouts', category: 'general', icon: '💸' },
   { id: 'assign-work', label: 'Assign task to ...', category: 'general', icon: '📌', requiresInput: true },

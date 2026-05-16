@@ -261,7 +261,7 @@ export function TaskBoard({
           {filterPills.map((pill) => (
             <span
               key={pill.label}
-              className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-violet-50 dark:bg-violet-950/50 text-violet-700 dark:text-violet-300 border border-violet-100 dark:border-violet-900"
+              className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-violet-50 dark:bg-violet-950/35 text-violet-700 dark:text-violet-300 border border-violet-100 dark:border-violet-900"
             >
               {pill.label}
               <button
@@ -429,13 +429,13 @@ export function TaskBoard({
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     onClick={() => startEdit(task)}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-violet-200 text-violet-700 hover:bg-violet-50 dark:border-violet-900 dark:text-violet-300 dark:hover:bg-violet-950/40 transition-colors"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border-violet-200  hover:bg-violet-50  transition-colors"
                     title="Edit task"
                   >
-                    <Pencil className="h-4 w-4" />
+                    <Pencil className="h-3 w-3 hover:text-violet-700" />
                   </button>
                   <span
-                    className={`text-[10px] px-2 py-0.5 rounded-full ${task.status === "done" ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400" : task.status === "in_progress" ? "bg-amber-50 text-amber-600 dark:bg-amber-950 dark:text-amber-400" : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"}`}
+                    className={`text-[10px] px-2 py-0.5 rounded-md border ${task.status === "done" ? "border-emerald-100 bg-emerald-50 text-emerald-600 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300" : task.status === "in_progress" ? "border-fuchsia-100 bg-fuchsia-50 text-fuchsia-600 dark:border-fuchsia-900 dark:bg-fuchsia-950/30 dark:text-fuchsia-300" : "border-violet-100 bg-violet-50 text-violet-600 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-300"}`}
                   >
                     {task.status}
                   </span>

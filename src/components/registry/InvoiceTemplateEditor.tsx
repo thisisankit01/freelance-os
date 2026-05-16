@@ -104,7 +104,7 @@ export function InvoiceTemplateEditor() {
                 <div className="flex items-center gap-2">
                   <span className="w-3 h-3 rounded-full border border-zinc-200" style={{ background: t.accent_color || "#7c3aed" }} />
                   <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">{t.name}</p>
-                  {t.is_default && <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-50 text-violet-600 dark:bg-violet-950/30 dark:text-violet-400">Default</span>}
+                  {t.is_default && <span className="text-[10px] px-2 py-0.5 rounded-md border border-violet-100 bg-violet-50 text-violet-600 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-300">Default</span>}
                 </div>
                 <p className="text-xs text-zinc-400 mt-1 truncate">{t.default_email_subject || "No subject set"}</p>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-2">{t.default_email_message || "No default message set"}</p>

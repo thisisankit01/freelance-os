@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "eval:intents": "node scripts/intent-eval.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.71",
@@ -28,6 +29,7 @@
     "openai": "^6.37.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "recharts": "^3.8.1",
     "resend": "^6.12.3",
     "shadcn": "^4.7.0",
     "tailwind-merge": "^3.5.0",

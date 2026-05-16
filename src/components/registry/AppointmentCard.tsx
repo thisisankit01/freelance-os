@@ -19,9 +19,9 @@ type AppointmentDetail = {
 }
 
 const STATUS_BADGE: Record<string, string> = {
-    scheduled: 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400',
-    completed: 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400',
-    cancelled: 'bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400',
+    scheduled: 'border-indigo-100 bg-indigo-50 dark:border-indigo-900 dark:bg-indigo-950/30 text-indigo-600 dark:text-indigo-300',
+    completed: 'border-emerald-100 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-300',
+    cancelled: 'border-rose-100 bg-rose-50 dark:border-rose-900 dark:bg-rose-950/30 text-rose-600 dark:text-rose-300',
 }
 
 export function AppointmentCard() {
@@ -100,7 +100,7 @@ export function AppointmentCard() {
                                 </p>
                             )}
                         </div>
-                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium capitalize ${STATUS_BADGE[appt.status] || STATUS_BADGE.scheduled}`}>
+                        <span className={`px-2 py-0.5 rounded-md border text-[11px] font-medium capitalize ${STATUS_BADGE[appt.status] || STATUS_BADGE.scheduled}`}>
                             {appt.status}
                         </span>
                     </div>

@@ -51,7 +51,7 @@ export function InventoryGrid() {
                   <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200 truncate">{item.item_name}</p>
                   <p className="text-xs text-zinc-400">{item.category || "Uncategorized"}</p>
                 </div>
-                <span className={`text-[11px] px-2 py-0.5 rounded-full ${low ? "bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-400" : "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400"}`}>
+                <span className={`text-[11px] px-2 py-0.5 rounded-md border ${low ? "border-rose-100 bg-rose-50 text-rose-600 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300" : "border-emerald-100 bg-emerald-50 text-emerald-600 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300"}`}>
                   {low ? "Low" : "OK"}
                 </span>
               </div>

@@ -471,6 +471,17 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
                 reply: `Sent **${p.title}** to **${json.data.recipient_email || p.recipientEmail}**.`,
             }
         }
+        if (p.kind === 'delete_client') {
+            const res = await fetch('/api/clients', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: p.clientId }),
+            })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) return { reply: `Could not delete client: ${json.error || res.statusText}. Archive the client if they have invoices or projects.` }
+            window.dispatchEvent(new Event('soloos:clients-refresh'))
+            return { reply: `Deleted client **${p.name}**.` }
+        }
         return { reply: 'Done.' }
     }
 
@@ -690,17 +701,24 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
         if (parsed.projectName && candidates.length === 0) {
             return { reply: `No project matching “${parsed.projectName}”.` }
         }
-        const lines = candidates
+        const rows = candidates
             .filter((p) => p.budget)
-            .slice(0, 6)
             .map((p) => {
                 const totalHours = (p.tasks ?? []).reduce((sum, t) => sum + (t.actual_hours || 0), 0)
                 const rate = totalHours > 0 && p.budget ? Math.round(p.budget / totalHours) : 0
-                return `• **${p.title}**: ₹${Number(p.budget).toLocaleString('en-IN')} budget · ${totalHours}h logged${rate ? ` · ₹${rate}/hr` : ''}`
+                return { p, totalHours, rate }
             })
+            .sort((a, b) => b.rate - a.rate)
+        const withHours = rows.filter((row) => row.rate > 0)
+        const visible = withHours.length ? withHours : rows
+        const lines = visible.slice(0, 6).map(({ p, totalHours, rate }) =>
+            `• **${p.title}**: ₹${Number(p.budget).toLocaleString('en-IN')} budget · ${totalHours}h logged${rate ? ` · ₹${rate}/hr` : ''}`,
+        )
         return {
-            reply: lines.length
+            reply: withHours.length
                 ? `Project profitability:\n${lines.join('\n')}`
+                : lines.length
+                  ? `No project has logged hours yet, so I cannot calculate the best hourly rate.\n${lines.join('\n')}`
                 : 'No project budgets found yet. Add a budget to see hourly profitability.',
         }
     }
@@ -1204,6 +1222,53 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
         return { reply: `${parts.join(' ')}.` }
     }
 
+    if (parsed.kind === 'open_client_import') {
+        window.dispatchEvent(new CustomEvent('soloos:open-client-import', { detail: { mode: parsed.mode ?? 'ai' } }))
+        return { reply: parsed.mode === 'google' ? 'Opening Google Contacts import.' : parsed.mode === 'manual' ? 'Opening client add form.' : 'Opening AI client import.' }
+    }
+
+    if (parsed.kind === 'create_client') {
+        const json = await apiJson('/api/clients', {
+            method: 'POST',
+            body: JSON.stringify({
+                name: parsed.name,
+                email: parsed.email,
+                phone: parsed.phone,
+                company: parsed.company,
+                city: parsed.city,
+                notes: parsed.notes,
+                status: 'active',
+            }),
+        })
+        window.dispatchEvent(new Event('soloos:clients-refresh'))
+        return { reply: `Added client **${json.data.name}**.` }
+    }
+
+    if (parsed.kind === 'update_client') {
+        const client = await resolveClient(parsed.name)
+        if (!client) return { reply: `Could not find client “${parsed.name}”.` }
+        await apiJson('/api/clients', {
+            method: 'PATCH',
+            body: JSON.stringify({ id: client.id, ...parsed.updates }),
+        })
+        window.dispatchEvent(new Event('soloos:clients-refresh'))
+        return { reply: `Updated client **${client.name}**.` }
+    }
+
+    if (parsed.kind === 'delete_client') {
+        const client = await resolveClient(parsed.name)
+        if (!client) return { reply: `Could not find client “${parsed.name}”.` }
+        store.setPendingConfirm({ kind: 'delete_client', clientId: client.id, name: client.name })
+        return {
+            reply: `Delete client **${client.name}**? Archive is safer if this client has invoices or projects.`,
+            chips: [
+                { label: 'Yes, delete', payload: 'yes' },
+                { label: 'Cancel', payload: 'no' },
+                { label: 'Archive instead', payload: `archive client ${client.name}` },
+            ],
+        }
+    }
+
     if (parsed.kind === 'list_invoices') {
         return { reply: 'Showing invoices.' }
     }
@@ -1297,35 +1362,18 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
         const project = projectResolution.project
         const contractClient = client ?? (project.clients ? { id: project.clients.id, name: project.clients.name, email: null } : null)
         const title = parsed.title || documentTitle('contract', contractClient?.name, project.title)
-        const content =
-            `SERVICE AGREEMENT\n\n` +
-            `Client: ${contractClient?.name || '[Client name]'}\n` +
-            `Project: ${project.title}\n` +
-            `Budget: ${project.budget ? `₹${Number(project.budget).toLocaleString('en-IN')}` : '[Add amount]'}\n` +
-            `Deadline: ${project.deadline || '[Add deadline]'}\n\n` +
-            `Scope of Work:\n${project.description || '[Describe deliverables, milestones, revision limits, and acceptance criteria.]'}\n\n` +
-            `Commercial Terms:\n${parsed.terms || 'Payment terms, taxes, late fees, and milestone schedule to be reviewed and finalized by both parties.'}\n\n` +
-            `Timeline:\nThe work will follow the project deadline and any milestone dates agreed in writing.\n\n` +
-            `This is a draft generated by SoloOS and should be reviewed before sending.`
-        await apiJson('/api/ai-documents', {
+        await apiJson('/api/ai-documents/generate', {
             method: 'POST',
             body: JSON.stringify({
-                document_type: 'contract',
+                documentType: 'contract',
                 title,
-                client_id: contractClient?.id ?? null,
-                project_id: project.id,
-                recipient_email: contractClient?.email ?? null,
-                status: 'draft',
-                question_answers: {
-                    clientName: contractClient?.name,
-                    projectName: project.title,
-                    terms: parsed.terms,
-                },
-                content,
+                clientName: contractClient?.name,
+                projectName: project.title,
+                terms: parsed.terms,
             }),
         })
         window.dispatchEvent(new Event('soloos:documents-refresh'))
-        return { reply: `Saved contract draft **${title}**. Review it before sending.` }
+        return { reply: `Saved AI contract draft **${title}** with project, task, client, invoice, time, assignment, and payout context. Review it before sending.` }
     }
 
     if (parsed.kind === 'draft_legal_notice') {
@@ -1336,32 +1384,17 @@ export async function runPmCommand(parsed: ParsedPmCommand): Promise<RunnerResul
             return { reply: `Invoice **${invoice.invoice_number}** belongs to **${invoice.clients.name}**, not **${parsed.clientName}**. I blocked this to avoid sending the wrong legal notice.` }
         }
         const title = parsed.title || documentTitle('legal_notice', invoice.clients?.name ?? parsed.clientName)
-        const content =
-            `LEGAL NOTICE FOR NON-PAYMENT\n\n` +
-            `To: ${invoice.clients?.name || parsed.clientName || '[Client name]'}\n` +
-            `Invoice: ${invoice.invoice_number}\n\n` +
-            `This notice records that payment remains outstanding despite prior reminders. ` +
-            `Please clear the dues within the stated period to avoid further action.\n\n` +
-            `Outstanding Amount: ${invoice.total ? `₹${Number(invoice.total).toLocaleString('en-IN')}` : '[Amount]'}\nDue Date: [Due date]\n\n` +
-            `This is a draft generated by SoloOS. Review with a qualified professional before sending.`
-        await apiJson('/api/ai-documents', {
+        await apiJson('/api/ai-documents/generate', {
             method: 'POST',
             body: JSON.stringify({
-                document_type: 'legal_notice',
+                documentType: 'legal_notice',
                 title,
-                client_id: invoice.clients?.id ?? null,
-                invoice_id: invoice?.id ?? null,
-                recipient_email: invoice.clients?.email ?? null,
-                status: 'draft',
-                question_answers: {
-                    clientName: invoice.clients?.name ?? parsed.clientName,
-                    invoiceNumber: invoice.invoice_number,
-                },
-                content,
+                clientName: invoice.clients?.name ?? parsed.clientName,
+                invoiceNumber: invoice.invoice_number,
             }),
         })
         window.dispatchEvent(new Event('soloos:documents-refresh'))
-        return { reply: `Saved legal notice draft **${title}**. I will not send it without confirmation.` }
+        return { reply: `Saved AI legal notice draft **${title}** with client, invoice, project, task, and payment context. I will not send it without confirmation.` }
     }
 
     if (parsed.kind === 'send_document') {

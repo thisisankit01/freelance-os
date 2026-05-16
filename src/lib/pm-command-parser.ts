@@ -49,6 +49,10 @@ export type ParsedPmCommand =
     | { kind: 'mark_all_tasks'; projectName?: string; status: string }
     | { kind: 'set_project_status'; projectRef: { kind: 'named'; name: string } | { kind: 'current' } | { kind: 'id'; id: string }; status: string }
     | { kind: 'list_clients'; search?: string; status?: string; city?: string }
+    | { kind: 'open_client_import'; mode?: 'manual' | 'ai' | 'google' }
+    | { kind: 'create_client'; name: string; email?: string; phone?: string; company?: string; city?: string; notes?: string }
+    | { kind: 'update_client'; name: string; updates: { email?: string | null; phone?: string | null; company?: string | null; city?: string | null; status?: string; notes?: string | null } }
+    | { kind: 'delete_client'; name: string }
     | { kind: 'list_invoices' }
     | { kind: 'show_invoice'; invoiceNumber?: string; clientName?: string }
     | { kind: 'mark_invoice_status'; invoiceNumber?: string; clientName?: string; status: string }
@@ -169,7 +173,17 @@ export function parsePmCommand(input: string): ParsedPmCommand | null {
     if (/^(undo|undo last)\b/.test(t)) return { kind: 'undo' }
     if (/^(yes|y|confirm|do it|go ahead)\b$/.test(t)) return { kind: 'confirm_yes' }
     if (/^(no|n|cancel|stop|abort)\b$/.test(t)) return { kind: 'confirm_no' }
-    if (/^(what project|current context|where am i)\b/.test(t)) return { kind: 'current_context' }
+    if (/^(what project|current context|where am i|where am i in (?:the )?app)\s*$/.test(t)) return { kind: 'current_context' }
+
+    const businessPerformanceIntent =
+        /\b(?:how|what).*\b(?:business|finance|financial|money|revenue|profit).*\b(?:performing|doing|health|status|overview|insights?|analytics)\b/.test(t) ||
+        /\bwhere\s+(?:am\s+i\s+)?(?:losing|leaking|spending)\s+money\b/.test(t) ||
+        /\b(?:revenue|income|sales)\s+(?:vs|versus|and|against)\s+(?:expenses?|costs?)\b/.test(t) ||
+        /\b(?:expenses?|costs?)\s+(?:vs|versus|and|against)\s+(?:revenue|income|sales)\b/.test(t) ||
+        /\b(?:finance|financial|money|business)\s+(?:dashboard|insights?|analytics|graphs?|charts?)\b/.test(t) ||
+        /\b(?:open|show|view)\s+(?:finance|financial|money|business)\s+dashboard\b/.test(t)
+    if (businessPerformanceIntent) return { kind: 'show_profit_loss' }
+
     if (/^(status|summary|overview)\b/.test(t)) return { kind: 'summary' }
 
     if (/\b(projects?|work)\b.*\b(behind schedule|late|delayed|overdue|past deadline)\b/.test(t)) {
@@ -178,7 +192,7 @@ export function parsePmCommand(input: string): ParsedPmCommand | null {
 
     if (/^list (all )?projects\b|^show (my )?projects\b/.test(t)) return { kind: 'list_projects' }
 
-    if (/\b(project profit|project profitability|earned per hour|hourly rate|revenue vs hours)\b/.test(t)) {
+    if (/\b(project profit|project profitability|project analytics|project insights|project graphs?|project charts?|earned per hour|hourly rate|revenue vs hours|best hourly rate|highest hourly rate|most profitable project)\b/.test(t)) {
         const mProfit = t.match(/\b(?:on|for)\s+(.+)$/)
         return {
             kind: 'show_project_profit',
@@ -202,9 +216,14 @@ export function parsePmCommand(input: string): ParsedPmCommand | null {
     m = t.match(/^(?:create|new|add)\s+(?:a\s+)?project\s+(?:called\s+)?(.+)$/)
     if (m) return { kind: 'create_project', name: stripPlaceholderBrackets(m[1]!) }
 
-    m = t.match(/^(?:edit|open|modify|update|change)\s+(?:project\s+)?(.+?)(?:\s+project)?(?:\s+(?:settings|details|modal|form))?$/)
+    m = t.match(/^(?:edit|open|modify|update|change)\s+(?:project\s+)?(.+?)(?:\s+project)(?:\s+(?:settings|details|modal|form))?$/)
     if (m && !/\b(budget|deadline|description|client|customer|status)\b/.test(m[1]!)) {
         return { kind: 'open_project_editor', name: stripPlaceholderBrackets(m[1]!) }
+    }
+
+    m = t.match(/^(?:edit|modify|update|change)\s+(.+?)(?:\s+(?:settings|details|modal|form))?$/)
+    if (m && /\bproject\b/.test(t) && !/\b(budget|deadline|description|client|customer|status)\b/.test(m[1]!)) {
+        return { kind: 'open_project_editor', name: stripPlaceholderBrackets(m[1]!.replace(/\bproject\b/g, '')) }
     }
 
     m = t.match(/^rename\s+project\s+(.+?)\s+to\s+(.+)$/)
@@ -368,6 +387,12 @@ export function parsePmCommand(input: string): ParsedPmCommand | null {
     m = t.match(/^(?:set|update|change)\s+(?:inventory|stock|item)\s+(.+?)\s+(?:qty|quantity|stock)\s+(?:to\s+)?(\d+)$/)
     if (m) return { kind: 'update_inventory_quantity', itemName: stripPlaceholderBrackets(m[1]!), quantity: Number(m[2]) }
 
+    if (
+        /^(?:show|open|view)\s+(?:profit\s*(?:and|&)\s*loss|p&l|pl)\b/.test(t) ||
+        /\b(?:business|money|financial|finance|revenue|expense|profit|loss)\s+(?:analytics|insights|graphs?|charts?|dashboard)\b/.test(t) ||
+        /\b(?:analytics|insights|graphs?|charts?)\b.*\b(?:profit|loss|revenue|expenses?|money|financial|finance)\b/.test(t)
+    ) return { kind: 'show_profit_loss' }
+
     if (/^(?:show|list|open)\s+(?:my\s+)?expenses\b/.test(t)) return { kind: 'list_expenses' }
     m = t.match(/^(?:show|list|open)\s+(.+?)\s+expenses\b/)
     if (m) return { kind: 'list_expenses', category: stripPlaceholderBrackets(m[1]!) }
@@ -379,8 +404,6 @@ export function parsePmCommand(input: string): ParsedPmCommand | null {
         amount: parseAmount(m[2]!) ?? 0,
         description: m[3] ? stripPlaceholderBrackets(m[3]) : undefined,
     }
-
-    if (/^(?:show|open)\s+(?:profit\s*(?:and|&)\s*loss|p&l|pl)\b/.test(t)) return { kind: 'show_profit_loss' }
 
     if (/^(?:show|list|open)\s+(?:team|subcontractors|staff)\b/.test(t)) return { kind: 'list_team' }
     m = t.match(/^(?:add|create)\s+(?:team\s+member|subcontractor|staff)\s+(.+?)(?:\s+(?:as|role)\s+(.+?))?(?:\s+(?:rate|payout)\s+([₹$]?[0-9,]+(?:\.[0-9]+)?))?$/)
@@ -489,6 +512,24 @@ export function parsePmCommand(input: string): ParsedPmCommand | null {
 
     m = t.match(/^(?:show|list|view)\s+(?:all\s+)?clients\b/)
     if (m) return { kind: 'list_clients' }
+
+    if (/\b(import|upload|onboard|add)\b.*\bclients?\b/.test(t)) {
+        if (/\bgoogle\b/.test(t)) return { kind: 'open_client_import', mode: 'google' }
+        if (/\b(ai|paste|bulk|many|list)\b/.test(t)) return { kind: 'open_client_import', mode: 'ai' }
+        return { kind: 'open_client_import', mode: 'manual' }
+    }
+
+    m = t.match(/^(?:add|create|new)\s+client\s+(.+?)(?:\s+email\s+([^\s]+))?(?:\s+phone\s+([+\d][\d\s().-]+))?$/)
+    if (m) return { kind: 'create_client', name: stripPlaceholderBrackets(m[1]!), email: m[2], phone: m[3]?.trim() }
+
+    m = t.match(/^(?:archive|deactivate)\s+client\s+(.+)$/)
+    if (m) return { kind: 'update_client', name: stripPlaceholderBrackets(m[1]!), updates: { status: 'inactive' } }
+
+    m = t.match(/^(?:activate|restore)\s+client\s+(.+)$/)
+    if (m) return { kind: 'update_client', name: stripPlaceholderBrackets(m[1]!), updates: { status: 'active' } }
+
+    m = t.match(/^(?:delete|remove)\s+client\s+(.+)$/)
+    if (m) return { kind: 'delete_client', name: stripPlaceholderBrackets(m[1]!) }
 
     m = t.match(/^(?:show|list|view)\s+(?:all\s+)?invoices\b/)
     if (m) return { kind: 'list_invoices' }

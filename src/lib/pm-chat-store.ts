@@ -52,6 +52,11 @@ type PendingConfirm =
           recipientEmail: string
           documentType: 'contract' | 'legal_notice'
       }
+    | {
+          kind: 'delete_client'
+          clientId: string
+          name: string
+      }
 
 type UndoFn = () => Promise<void>
 

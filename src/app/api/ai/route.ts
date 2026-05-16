@@ -272,7 +272,8 @@ WHAT YOU CAN SHOW (the dashboard components):
 - ProjectBoard    → kanban board for projects (todo/in-progress/review/done/on-hold)
 - TaskBoard       → task list with checkboxes per project
 - TimeTracker     → start/stop timer for billable hours
-- ProjectProfit   → budget vs hours = hourly rate per project
+- ProjectProfit   → project insights, charts, budget vs hours, effective hourly rate per project
+- ProfitLoss      → financial insights, profit/loss graphs, revenue, expenses, margin, category charts
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 HOW TO HANDLE DIFFERENT MESSAGES:
@@ -334,12 +335,12 @@ REMINDERS ("remind Rahul about tomorrow", "send reminder", "nudge client about c
   - Extract clientName into appointmentData if mentioned
   - Example: "remind Rahul about tomorrow's call" → { "components": ["ReminderSender"], "appointmentData": { "clientName": "Rahul" } }
 
-PROJECTS & TIME TRACKING ("show projects", "my tasks", "start timer", "profitability"):
+PROJECTS & TIME TRACKING ("show projects", "my tasks", "start timer", "profitability", "project insights", "project charts"):
 → changeUI: true
   • "projects", "kanban", "board" → ProjectBoard
   • "tasks", "todo", "my tasks" → TaskBoard
   • "timer", "track time", "start timer", "stop timer" → TimeTracker
-  • "profit", "hourly rate", "project earnings" → ProjectProfit
+  • "profit", "hourly rate", "project earnings", "project insights", "project charts", "project graphs" → ProjectProfit
   • "new project", "create project", "add a project named …" → changeUI: true, components: ["ProjectBoard"], action: "none"
     NEVER set action to "create_project". Projects are created by the command bar (client); you only open ProjectBoard.
   • TASKS BY PROJECT — "show tasks in X", "tasks in X", etc. → components: ["TaskBoard","ProjectBoard"], action: "none"
@@ -353,9 +354,22 @@ PROJECTS & TIME TRACKING ("show projects", "my tasks", "start timer", "profitabi
   • Extract the project name as accurately as possible from the user's message.
   • Examples:
     - "edit project Acme Corp" → projectData: { title: "Acme Corp" }, action: "edit_project"
+
     - "open Acme settings" → projectData: { title: "Acme" }, action: "edit_project"
     - "I want to change the deadline on Acme Corp project" → projectData: { title: "Acme Corp" }, action: "edit_project"
     - "update budget for my Acme project" → projectData: { title: "Acme" }, action: "edit_project"
+
+FINANCIAL ANALYTICS ("show profit loss", "financial insights", "profit graphs", "revenue analytics", "expense charts"):
+→ changeUI: true, components: ["ProfitLoss"]
+  • Use ProfitLoss for business-wide revenue, expense, profit, margin, P&L, graphs, charts, analytics, or insights.
+  • Examples:
+    - "show profit graphs" → components: ["ProfitLoss"]
+    - "show financial insights" → components: ["ProfitLoss"]
+    - "show revenue analytics" → components: ["ProfitLoss"]
+    - "how is my business performing" → components: ["ProfitLoss"]
+    - "where am I losing money" → components: ["ProfitLoss"]
+    - "show me revenue vs expenses" → components: ["ProfitLoss"]
+    - "open finance dashboard" → components: ["ProfitLoss"]
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DATE/TIME AWARENESS (CRITICAL):

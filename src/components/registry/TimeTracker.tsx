@@ -212,7 +212,7 @@ export function TimeTracker() {
               </p>
             </div>
             {entry.billable && (
-              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-0.5 rounded-full font-medium">
+              <span className="text-[10px] text-emerald-600 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900 px-2 py-0.5 rounded-md font-medium">
                 Billable
               </span>
             )}

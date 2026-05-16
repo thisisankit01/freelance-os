@@ -1,6 +1,7 @@
 import { generateText } from 'ai'
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import type { ParsedPmCommand } from '@/lib/pm-command-parser'
+import { pmCapabilitiesForPrompt } from '@/lib/pm-capability-registry'
 
 const openrouter = createOpenRouter({
     apiKey: process.env.OPENROUTER_API_KEY,
@@ -56,6 +57,10 @@ type AiPmIntent =
     confidence: number
 }
     | { kind: 'list_clients'; search?: string; status?: string; city?: string; confidence: number }
+    | { kind: 'open_client_import'; mode?: 'manual' | 'ai' | 'google'; confidence: number }
+    | { kind: 'create_client'; name: string; email?: string; phone?: string; company?: string; city?: string; notes?: string; confidence: number }
+    | { kind: 'update_client'; name: string; updates: { email?: string | null; phone?: string | null; company?: string | null; city?: string | null; status?: string; notes?: string | null }; confidence: number }
+    | { kind: 'delete_client'; name: string; confidence: number }
     | { kind: 'list_invoices'; confidence: number }
     | { kind: 'show_invoice'; invoiceNumber?: string; clientName?: string; confidence: number }
     | { kind: 'mark_invoice_status'; invoiceNumber?: string; clientName?: string; status: string; confidence: number }
@@ -89,6 +94,10 @@ const ALLOWED_KINDS = new Set([
     'delete_task',
     'set_project_status',
     'list_clients',
+    'open_client_import',
+    'create_client',
+    'update_client',
+    'delete_client',
     'list_invoices',
     'show_invoice',
     'mark_invoice_status',
@@ -347,6 +356,45 @@ function sanitizeIntent(raw: Record<string, unknown>): AiPmIntent {
         }
     }
 
+    if (kind === 'open_client_import') {
+        const mode = raw.mode === 'manual' || raw.mode === 'google' || raw.mode === 'ai' ? raw.mode : undefined
+        return { kind, ...(mode ? { mode } : {}), confidence }
+    }
+
+    if (kind === 'create_client') {
+        const name = cleanTitle(raw.name)
+        const email = cleanTitle(raw.email)
+        const phone = cleanTitle(raw.phone)
+        const company = cleanTitle(raw.company)
+        const city = cleanTitle(raw.city)
+        const notes = typeof raw.notes === 'string' ? raw.notes.trim() : undefined
+        return name
+            ? { kind, name, ...(email ? { email } : {}), ...(phone ? { phone } : {}), ...(company ? { company } : {}), ...(city ? { city } : {}), ...(notes ? { notes } : {}), confidence }
+            : { kind: 'none', confidence: 0, reason: 'Missing client name' }
+    }
+
+    if (kind === 'update_client') {
+        const name = cleanTitle(raw.name)
+        const updatesRaw = typeof raw.updates === 'object' && raw.updates !== null ? raw.updates as Record<string, unknown> : {}
+        const status = updatesRaw.status === 'active' || updatesRaw.status === 'inactive' ? updatesRaw.status : undefined
+        const updates = {
+            ...(cleanTitle(updatesRaw.email) ? { email: cleanTitle(updatesRaw.email) } : updatesRaw.email === null ? { email: null } : {}),
+            ...(cleanTitle(updatesRaw.phone) ? { phone: cleanTitle(updatesRaw.phone) } : updatesRaw.phone === null ? { phone: null } : {}),
+            ...(cleanTitle(updatesRaw.company) ? { company: cleanTitle(updatesRaw.company) } : updatesRaw.company === null ? { company: null } : {}),
+            ...(cleanTitle(updatesRaw.city) ? { city: cleanTitle(updatesRaw.city) } : updatesRaw.city === null ? { city: null } : {}),
+            ...(typeof updatesRaw.notes === 'string' ? { notes: updatesRaw.notes.trim() } : updatesRaw.notes === null ? { notes: null } : {}),
+            ...(status ? { status } : {}),
+        }
+        return name && Object.keys(updates).length
+            ? { kind, name, updates, confidence }
+            : { kind: 'none', confidence: 0, reason: 'Missing client update fields' }
+    }
+
+    if (kind === 'delete_client') {
+        const name = cleanTitle(raw.name)
+        return name ? { kind, name, confidence } : { kind: 'none', confidence: 0, reason: 'Missing client name' }
+    }
+
     if (kind === 'create_invoice') {
         const clientName = cleanTitle(raw.clientName)
         const amount = typeof raw.amount === 'number' ? raw.amount : undefined
@@ -559,6 +607,19 @@ When confident and enough information exists, return an executable command.
 When the intent is understandable but information is missing, return ask_clarification.
 Never guess important missing details.
 
+CAPABILITY REGISTRY:
+Use this registry as the source of truth for what the app can do. First decide the user's business intent and the best matching capability, then output the matching command JSON shape below.
+
+${pmCapabilitiesForPrompt()}
+
+Routing rules:
+- Business-wide performance, finance dashboard, revenue vs expenses, profit/loss, financial health, money leakage, and "where am I losing money" MUST map to show_profit_loss.
+- Project-level hourly rate, budget versus hours, best hourly rate, most profitable project, and "how much did I earn per hour on X" MUST map to show_project_profit.
+- Do not treat "finance dashboard" as a project name.
+- Do not treat "where am I losing money" as current_context.
+- Do not open ExpenseTracker for revenue-vs-expenses questions; use ProfitLoss because it contains the chart/insight surface.
+- If a send, delete, legal, payment, or invoice-status action is clear, return the structured command. The app confirmation layer will ask before executing serious actions.
+
 Available command shapes:
 
 0. {"kind":"ask_clarification","reply":"What amount should I put on the invoice?","chips":[{"label":"₹5,000","payload":"create invoice for Rahul 5000"}],"confidence":0.8}
@@ -602,6 +663,11 @@ Task statuses:
 20. {"kind":"list_clients","search":"Client Name","confidence":0.9}
 21. {"kind":"list_clients","status":"active","confidence":0.9}
 22. {"kind":"list_clients","city":"Mumbai","confidence":0.9}
+22a. {"kind":"open_client_import","mode":"ai","confidence":0.9}
+22b. {"kind":"open_client_import","mode":"google","confidence":0.9}
+22c. {"kind":"create_client","name":"Rahul Sharma","email":"rahul@example.com","phone":"+91 99999 99999","company":"Acme","city":"Mumbai","confidence":0.9}
+22d. {"kind":"update_client","name":"Rahul Sharma","updates":{"status":"inactive"},"confidence":0.9}
+22e. {"kind":"delete_client","name":"Rahul Sharma","confidence":0.9}
 23. {"kind":"list_invoices","confidence":0.9}
 24. {"kind":"show_invoice","invoiceNumber":"INV-001","confidence":0.9}
 25. {"kind":"mark_invoice_status","invoiceNumber":"INV-001","status":"paid","confidence":0.9}
@@ -662,6 +728,21 @@ Meaning examples:
 - "pause acme website" -> set_project_status on_hold
 - "resume acme website" -> set_project_status in_progress
 - "what is late" -> behind_schedule_projects
+- "show profit graphs" -> show_profit_loss
+- "show financial insights" -> show_profit_loss
+- "show revenue analytics" -> show_profit_loss
+- "how is my business performing" -> show_profit_loss
+- "where am I losing money" -> show_profit_loss
+- "show me revenue vs expenses" -> show_profit_loss
+- "open finance dashboard" -> show_profit_loss
+- "show project charts" -> show_project_profit
+- "show project insights" -> show_project_profit
+- "which project has best hourly rate" -> show_project_profit
+- "import clients" -> open_client_import mode ai
+- "import google contacts" -> open_client_import mode google
+- "add client Rahul email rahul@example.com" -> create_client
+- "archive client Rahul" -> update_client status inactive
+- "delete client Rahul" -> delete_client
 - "who is unpaid" -> list_invoices
 - "make bill for Rahul 5000" -> create_invoice
 - "make bill for Rahul" -> ask_clarification for amount

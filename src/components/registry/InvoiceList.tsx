@@ -11,10 +11,14 @@ import { pdf } from "@react-pdf/renderer";
 import { useUser } from "@clerk/nextjs";
 
 const STATUS_STYLES: Record<string, string> = {
-  draft: "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400",
-  sent: "bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400",
-  paid: "bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400",
-  overdue: "bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400",
+  draft:
+    "border-violet-100 bg-violet-50 text-violet-600 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-300",
+  sent:
+    "border-indigo-100 bg-indigo-50 text-indigo-600 dark:border-indigo-900 dark:bg-indigo-950/30 dark:text-indigo-300",
+  paid:
+    "border-emerald-100 bg-emerald-50 text-emerald-600 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300",
+  overdue:
+    "border-rose-100 bg-rose-50 text-rose-600 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300",
 };
 
 export function InvoiceList() {
@@ -151,7 +155,7 @@ export function InvoiceList() {
           )}
         </p>
         {!loading && filters.status && (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-violet-50 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 border border-violet-100 dark:border-violet-800">
+          <span className="text-[11px] px-2 py-0.5 rounded-md bg-violet-50 dark:bg-violet-950/30 text-violet-600 dark:text-violet-300 border border-violet-100 dark:border-violet-900">
             {filters.status}
           </span>
         )}
@@ -232,7 +236,7 @@ export function InvoiceList() {
                     ₹{inv.total?.toLocaleString("en-IN")}
                   </p>
                   <span
-                    className={`px-2 py-0.5 rounded-full text-xs font-medium capitalize ${STATUS_STYLES[inv.status] || STATUS_STYLES.draft}`}
+                    className={`px-2 py-0.5 rounded-md border text-[11px] font-medium capitalize ${STATUS_STYLES[inv.status] || STATUS_STYLES.draft}`}
                   >
                     {inv.status}
                   </span>

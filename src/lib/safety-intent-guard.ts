@@ -256,8 +256,8 @@ export function shouldAskInsteadOfUiFallback(input: string): ClarifyIntentResult
     if (safeSmallTalk) return { shouldAsk: false }
 
     const businessOrWorkspaceIntent = hasAny(t, [
-        /\b(projects?|tasks?|todos?|kanban|board|timer|track time|profitability)\b/,
-        /\b(clients?|invoices?|bill|billing|payments?|paid|unpaid|overdue|revenue|earnings?)\b/,
+        /\b(projects?|tasks?|todos?|kanban|board|timer|track time|profitability|analytics|insights|graphs?|charts?)\b/,
+        /\b(clients?|invoices?|bill|billing|payments?|paid|unpaid|overdue|revenue|earnings?|profit|loss|expenses?|financial|finance)\b/,
         /\b(meetings?|appointments?|calendar|schedule|book|cancel|remind|reminder|call)\b/,
         /\b(create|add|new|rename|delete|remove|send|email|mail|share|mark|move|finish|complete|close|pause|resume)\b/,
     ])

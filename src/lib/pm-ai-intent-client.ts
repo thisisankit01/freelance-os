@@ -45,6 +45,7 @@ function minimumConfidenceForCommand(command: ParsedPmCommand) {
         case 'send_reminder':
         case 'mark_invoice_status':
         case 'send_document':
+        case 'delete_client':
             return 0.82
         case 'create_project':
         case 'open_project_editor':
@@ -58,7 +59,11 @@ function minimumConfidenceForCommand(command: ParsedPmCommand) {
         case 'start_timer':
         case 'stop_timer':
         case 'update_invoice_template':
+        case 'create_client':
+        case 'update_client':
             return 0.72
+        case 'open_client_import':
+            return 0.58
         default:
             return 0.62
     }

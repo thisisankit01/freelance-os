@@ -16,12 +16,16 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  not_started: "bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400",
+  not_started:
+    "bg-violet-50 dark:bg-violet-950/30 text-violet-600 dark:text-violet-300 border border-violet-100 dark:border-violet-900",
   in_progress:
-    "bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400",
-  review: "bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400",
-  done: "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400",
-  on_hold: "bg-rose-50 dark:bg-rose-950/40 text-rose-500 dark:text-rose-400",
+    "bg-indigo-50 dark:bg-indigo-950/35 text-indigo-600 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900",
+  review:
+    "bg-fuchsia-50 dark:bg-fuchsia-950/30 text-fuchsia-600 dark:text-fuchsia-300 border border-fuchsia-100 dark:border-fuchsia-900",
+  done:
+    "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-300 border border-emerald-100 dark:border-emerald-900",
+  on_hold:
+    "bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-300 border border-rose-100 dark:border-rose-900",
 };
 
 const STATUS_DOT: Record<string, string> = {
@@ -554,7 +558,7 @@ export function ProjectBoard() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-0.5">
                       <span
-                        className={`text-[10px] font-semibold mx-0 px-2 my-1 py-0.5 rounded-sm ${STATUS_COLORS[editingProject.status]}`}
+                        className={`text-[10px] font-medium mx-0 px-2 my-1 py-0.5 rounded-md ${STATUS_COLORS[editingProject.status]}`}
                       >
                         {STATUS_LABELS[editingProject.status]}
                       </span>
@@ -661,11 +665,11 @@ export function ProjectBoard() {
                         onClick={() =>
                           setEditForm((f) => ({ ...f, status: s }))
                         }
-                        className={`text-[11px] font-medium px-2.5 py-1 rounded-full transition-all ${
+                        className={`text-[11px] font-medium px-2.5 py-1 rounded-md transition-all ${
                           editForm.status === s
                             ? STATUS_COLORS[s] +
-                              " ring-1 ring-offset-1 ring-current"
-                            : "bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                              " ring-1 ring-violet-200 dark:ring-violet-900"
+                            : "border border-violet-100 bg-violet-50/70 text-violet-500 hover:bg-violet-100 dark:border-violet-900 dark:bg-violet-950/25 dark:text-violet-300 dark:hover:bg-violet-950/45"
                         }`}
                       >
                         {STATUS_LABELS[s]}

@@ -84,6 +84,10 @@ function pmCommandSoloLayout(
     case "mark_all_tasks":
       return "TaskBoard";
     case "list_clients":
+    case "open_client_import":
+    case "create_client":
+    case "update_client":
+    case "delete_client":
       return "ClientTable";
     case "list_invoices":
     case "show_invoice":
@@ -173,6 +177,18 @@ function applyClarificationAnswer(originalPrompt: string, slot: ReturnType<typeo
   if (slot === "amount") return `${originalPrompt} ${clean}`;
   if (slot === "recipient") return `${originalPrompt} to ${clean}`;
   return `${originalPrompt} ${clean}`;
+}
+
+function shouldUseLocalParserFirst(input: string) {
+  const raw = input.trim();
+  const t = raw.toLowerCase().replace(/\s+/g, " ");
+
+  return (
+    raw.startsWith("__pm:") ||
+    /^(yes|y|confirm|do it|go ahead|no|n|cancel|abort|undo|undo last|help|commands|\?)$/.test(
+      t,
+    )
+  );
 }
 
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
@@ -385,7 +401,12 @@ export function CommandBar({
           setTimeout(() => setAiMessage(""), 7000);
           return;
         }
-        let parsed = parsePmCommand(trimmed);
+        let parsed: ParsedPmCommand | null = null;
+        const localFirst = shouldUseLocalParserFirst(trimmed);
+
+        if (localFirst) {
+          parsed = parsePmCommand(trimmed);
+        }
 
         if (!parsed) {
           setAiMessage("Checking…");
@@ -415,28 +436,28 @@ export function CommandBar({
           if (aiParsed.type === "command") {
             parsed = aiParsed.command;
           } else {
-            const askInstead = shouldAskInsteadOfUiFallback(trimmed);
-            if (!askInstead.shouldAsk && !needsWorkspaceClarification(trimmed)) {
-              // Low-risk navigation can continue to Aria. Serious or vague actions stop here.
-            } else {
-              const reply = askInstead.shouldAsk
-                ? askInstead.reply
-                : "I’m not sure which workspace action to run. Please mention the exact project, task, client, invoice, or recipient.";
-              const chips = askInstead.shouldAsk ? askInstead.chips : undefined;
-              usePmChatStore.getState().addUserMessage(trimmed);
-              usePmChatStore.getState().addAssistantMessage(reply, chips);
-              usePmChatStore.getState().setPendingClarification({
-                originalPrompt: trimmed,
-                slot: inferClarificationSlot(reply),
-                createdAt: Date.now(),
-              });
-              setAiMessage(reply);
-              setWorkspaceChips(
-                chips && chips.length > 0 ? chips : null,
-              );
-              setTimeout(() => setAiMessage(""), 7000);
-              return;
-            }
+            parsed = parsePmCommand(trimmed);
+          }
+        }
+
+        if (!parsed) {
+          const askInstead = shouldAskInsteadOfUiFallback(trimmed);
+          if (askInstead.shouldAsk || needsWorkspaceClarification(trimmed)) {
+            const reply = askInstead.shouldAsk
+              ? askInstead.reply
+              : "I’m not sure which workspace action to run. Please mention the exact project, task, client, invoice, or recipient.";
+            const chips = askInstead.shouldAsk ? askInstead.chips : undefined;
+            usePmChatStore.getState().addUserMessage(trimmed);
+            usePmChatStore.getState().addAssistantMessage(reply, chips);
+            usePmChatStore.getState().setPendingClarification({
+              originalPrompt: trimmed,
+              slot: inferClarificationSlot(reply),
+              createdAt: Date.now(),
+            });
+            setAiMessage(reply);
+            setWorkspaceChips(chips && chips.length > 0 ? chips : null);
+            setTimeout(() => setAiMessage(""), 7000);
+            return;
           }
         }
 
@@ -1221,7 +1242,7 @@ export function CommandBar({
           <button
             key={s}
             onClick={() => handleSubmit(s)}
-            className="text-xs px-2.5 py-1 rounded-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 hover:border-zinc-300 transition-all"
+            className="text-[11px] px-2.5 py-1 rounded-md bg-violet-50 dark:bg-violet-950/25 border border-violet-100 dark:border-violet-900 text-violet-600 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-950/45 transition-all"
           >
             {s}
           </button>
@@ -1239,7 +1260,7 @@ export function CommandBar({
       transition={{ duration: 0.15 }}
       className="mb-2 text-center"
     >
-      <span className="text-xs px-3 py-1 rounded-full bg-violet-50 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 border border-violet-100 dark:border-violet-800">
+      <span className="text-[11px] px-3 py-1 rounded-md bg-violet-50 dark:bg-violet-950/30 text-violet-600 dark:text-violet-300 border border-violet-100 dark:border-violet-900">
         {aiMessage}
       </span>
     </motion.div>
@@ -1345,7 +1366,7 @@ export function CommandBar({
                     type="button"
                     disabled={loading}
                     onClick={() => handleSubmit(c.payload)}
-                    className="text-xs px-2.5 py-1 rounded-full bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40 transition-colors"
+                    className="text-[11px] px-2.5 py-1 rounded-md bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40 transition-colors"
                   >
                     {c.label}
                   </button>
